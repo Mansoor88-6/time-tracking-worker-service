@@ -12,4 +12,7 @@ export default () => ({
     password: process.env.TIMESCALE_DB_PASSWORD || 'postgres',
     database: process.env.TIMESCALE_DB_NAME || 'timescale_db',
   },
+  worker: {
+    internalKey: process.env.WORKER_INTERNAL_KEY || 'change-me-in-production',
+  },
 });

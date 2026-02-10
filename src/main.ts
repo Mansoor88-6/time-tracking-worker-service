@@ -2,7 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { MicroserviceOptions } from '@nestjs/microservices';
 import { AppModule } from './app.module';
 import { ConfigService } from '@nestjs/config';
-import { Logger } from '@nestjs/common';
+import { Logger, ValidationPipe } from '@nestjs/common';
 import { getKafkaConfig } from './kafka/kafka.config';
 
 async function bootstrap() {
@@ -12,6 +12,15 @@ async function bootstrap() {
   // We create a hybrid app (HTTP + Microservice) to enable health checks
   const app = await NestFactory.create(AppModule);
   const configService = app.get(ConfigService);
+
+  // Enable validation and transformation for DTOs
+  app.useGlobalPipes(
+    new ValidationPipe({
+      transform: true, // Automatically transform query params to DTO types
+      whitelist: true, // Strip properties that don't have decorators
+      forbidNonWhitelisted: true, // Throw error if non-whitelisted properties are present
+    }),
+  );
 
   // Get Kafka configuration
   const kafkaConfig = getKafkaConfig(configService);

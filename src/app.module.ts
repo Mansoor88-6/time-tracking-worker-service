@@ -7,6 +7,7 @@ import { KafkaModule } from './kafka/kafka.module';
 import { EventsConsumerModule } from './events-consumer/events-consumer.module';
 import { TimescaleModule } from './timescale/timescale.module';
 import { HealthModule } from './health/health.module';
+import { StatsModule } from './stats/stats.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { HealthModule } from './health/health.module';
     TimescaleModule,
     EventsConsumerModule,
     HealthModule,
+    StatsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
