@@ -6,6 +6,7 @@ import configuration from './config/configuration';
 import { KafkaModule } from './kafka/kafka.module';
 import { EventsConsumerModule } from './events-consumer/events-consumer.module';
 import { TimescaleModule } from './timescale/timescale.module';
+import { BackendDbModule } from './backend-db/backend-db.module';
 import { HealthModule } from './health/health.module';
 import { StatsModule } from './stats/stats.module';
 
@@ -17,6 +18,7 @@ import { StatsModule } from './stats/stats.module';
     }),
     KafkaModule,
     TimescaleModule,
+    BackendDbModule,
     EventsConsumerModule,
     HealthModule,
     StatsModule,

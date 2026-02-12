@@ -37,21 +37,47 @@ export class StatsService {
   }
 
   /**
-   * Get dashboard stats for a user for a specific date in their timezone
+   * Get dashboard stats for a user for a specific date or date range in their timezone
    *
    * @param tenantId - Tenant ID
    * @param userId - User ID
-   * @param date - Date string in YYYY-MM-DD format
+   * @param date - Date string in YYYY-MM-DD format (for single date)
    * @param timezone - IANA timezone (e.g., 'Asia/Karachi'), defaults to UTC
+   * @param startDate - Start date string in YYYY-MM-DD format (for date range)
+   * @param endDate - End date string in YYYY-MM-DD format (for date range)
    * @returns Dashboard statistics
    */
   async getDashboardStats(
     tenantId: number,
     userId: number,
-    date: string,
+    date?: string,
     timezone?: string,
+    startDate?: string,
+    endDate?: string,
   ): Promise<DashboardStats> {
-    const cacheKey = `${tenantId}:${userId}:${date}:${timezone || 'UTC'}`;
+    // Determine if using date range or single date
+    const useDateRange = startDate && endDate;
+    
+    let cacheKey: string;
+    let startTime: Date;
+    let endTime: Date;
+
+    if (useDateRange) {
+      // Use date range
+      const boundaries = this.getDateRangeBoundaries(startDate, endDate, timezone);
+      startTime = boundaries.startTime;
+      endTime = boundaries.endTime;
+      cacheKey = `${tenantId}:${userId}:${startDate}:${endDate}:${timezone || 'UTC'}`;
+    } else {
+      // Use single date (backward compatibility)
+      if (!date) {
+        throw new Error('Either date or startDate/endDate must be provided');
+      }
+      const boundaries = this.getDayBoundaries(date, timezone);
+      startTime = boundaries.startTime;
+      endTime = boundaries.endTime;
+      cacheKey = `${tenantId}:${userId}:${date}:${timezone || 'UTC'}`;
+    }
 
     // Check cache
     const cached = this.cache.get(cacheKey);
@@ -65,9 +91,6 @@ export class StatsService {
     if (cached) {
       this.logger.debug(`Cache expired for ${cacheKey}, fetching fresh data`);
     }
-
-    // Calculate timezone-aware day boundaries
-    const { startTime, endTime } = this.getDayBoundaries(date, timezone);
 
     this.logger.log(
       `🔍 Querying events: UTC ${startTime.toISOString()} to ${endTime.toISOString()}`,
@@ -166,6 +189,34 @@ export class StatsService {
   }
 
   /**
+   * Convert a date range and timezone to UTC boundaries
+   *
+   * @param startDate - Start date string in YYYY-MM-DD format
+   * @param endDate - End date string in YYYY-MM-DD format
+   * @param timezone - IANA timezone (e.g., 'Asia/Karachi')
+   * @returns Start and end times in UTC
+   */
+  private getDateRangeBoundaries(
+    startDate: string,
+    endDate: string,
+    timezone?: string,
+  ): { startTime: Date; endTime: Date } {
+    // Get start of first day
+    const startBoundaries = this.getDayBoundaries(startDate, timezone);
+    const startTime = startBoundaries.startTime;
+
+    // Get end of last day
+    const endBoundaries = this.getDayBoundaries(endDate, timezone);
+    const endTime = endBoundaries.endTime;
+
+    this.logger.debug(
+      `Date range conversion: ${startDate} to ${endDate} in ${timezone || 'UTC'} -> UTC ${startTime.toISOString()} to ${endTime.toISOString()}`,
+    );
+
+    return { startTime, endTime };
+  }
+
+  /**
    * Clear cache for a specific user/date combination
    * Useful when events are deleted and we want fresh stats
    */
@@ -238,9 +289,18 @@ export class StatsService {
     const maxAppsPerCategory = 20;
 
     for (const app of rawAppUsage) {
-      const category = this.appCategorizationService.categorizeApp(
+      // For web apps, extract URL from breakdown for URL-based rule matching
+      // Use the most common URL (first in sorted breakdown)
+      const url = app.appType === 'web' && app.urlBreakdown.length > 0
+        ? app.urlBreakdown[0].url || null
+        : undefined;
+
+      const category = await this.appCategorizationService.categorizeApp(
+        tenantId,
+        userId,
         app.appName,
         app.appType,
+        url || undefined,
       );
 
       const appUsage = {

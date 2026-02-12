@@ -15,4 +15,11 @@ export default () => ({
   worker: {
     internalKey: process.env.WORKER_INTERNAL_KEY || 'change-me-in-production',
   },
+  backendDb: {
+    host: process.env.BACKEND_DB_HOST || process.env.DB_HOST || 'localhost',
+    port: parseInt(process.env.BACKEND_DB_PORT || process.env.DB_PORT || '5432', 10),
+    username: process.env.BACKEND_DB_USER || process.env.DB_USERNAME || 'postgres',
+    password: process.env.BACKEND_DB_PASSWORD || process.env.DB_PASSWORD || 'postgres',
+    database: process.env.BACKEND_DB_NAME || process.env.DB_NAME || 'time-tracking',
+  },
 });

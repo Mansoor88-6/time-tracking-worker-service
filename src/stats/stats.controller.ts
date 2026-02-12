@@ -21,7 +21,7 @@ export class StatsController {
     const startTime = Date.now();
 
     this.logger.log(
-      `📊 Stats request: tenant=${query.tenantId}, user=${query.userId}, date=${query.date}, tz=${query.tz || 'UTC'}`,
+      `📊 Stats request: tenant=${query.tenantId}, user=${query.userId}, date=${query.date || 'N/A'}, startDate=${query.startDate || 'N/A'}, endDate=${query.endDate || 'N/A'}, tz=${query.tz || 'UTC'}`,
     );
 
     try {
@@ -30,6 +30,8 @@ export class StatsController {
         query.userId,
         query.date,
         query.tz,
+        query.startDate,
+        query.endDate,
       );
 
       const duration = Date.now() - startTime;
@@ -52,31 +54,44 @@ export class StatsController {
 
   @Get('clear-cache')
   async clearCache(@Query() query: StatsQueryDto) {
+    // clearCache requires a date - use today's date if not provided
+    const date = query.date || this.getTodayDateString();
     this.statsService.clearCache(
       query.tenantId,
       query.userId,
-      query.date,
+      date,
       query.tz,
     );
     this.logger.log(
-      `🗑️ Cache cleared for tenant=${query.tenantId}, user=${query.userId}, date=${query.date}, tz=${query.tz || 'UTC'}`,
+      `🗑️ Cache cleared for tenant=${query.tenantId}, user=${query.userId}, date=${date}, tz=${query.tz || 'UTC'}`,
     );
     return { message: 'Cache cleared successfully' };
+  }
+
+  private getTodayDateString(): string {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   }
 
   @Get('app-usage')
   async getAppUsage(@Query() query: StatsQueryDto) {
     const startTime = Date.now();
 
+    // Use today's date if not provided
+    const date = query.date || this.getTodayDateString();
+
     this.logger.log(
-      `📱 App usage request: tenant=${query.tenantId}, user=${query.userId}, date=${query.date}, tz=${query.tz || 'UTC'}`,
+      `📱 App usage request: tenant=${query.tenantId}, user=${query.userId}, date=${date}, tz=${query.tz || 'UTC'}`,
     );
 
     try {
       const appUsage = await this.statsService.getAppUsageStats(
         query.tenantId,
         query.userId,
-        query.date,
+        date,
         query.tz,
       );
 
