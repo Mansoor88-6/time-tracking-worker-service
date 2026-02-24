@@ -146,6 +146,23 @@ export class AppCategorizationService {
     'messenger.com',
   ]);
 
+  // Browser names: when stats repo groups browser activity with no domain it uses appType 'web'
+  // Team rules are often created as desktop (e.g. "Chrome" desktop = unproductive). We match those here.
+  private readonly browserAppNames = new Set([
+    'google chrome',
+    'chrome',
+    'chromium',
+    'mozilla firefox',
+    'firefox',
+    'microsoft edge',
+    'edge',
+    'safari',
+    'opera',
+    'brave',
+    'vivaldi',
+    'tor browser',
+  ]);
+
   // Fallback: Neutral desktop applications
   private readonly neutralDesktopApps = new Set([
     'explorer',
@@ -204,7 +221,6 @@ export class AppCategorizationService {
     if (!appName || appName.trim() === '') {
       return 'neutral';
     }
-
     const normalizedName = appName.toLowerCase().trim();
 
     // Get user's team rules (with caching)
@@ -227,9 +243,14 @@ export class AppCategorizationService {
 
     // Priority 3: Legacy app name rules (backward compatibility)
     if (rules.size > 0) {
-      const ruleKey = `${normalizedName}:${appType}`;
-      const category = rules.get(ruleKey);
-
+      let ruleKey = `${normalizedName}:${appType}`;
+      let category = rules.get(ruleKey);
+      // When activity is grouped as browser with appType 'web' (e.g. "chrome" + web), also check
+      // desktop rule so "Chrome (desktop)" rule applies to browser usage when domain wasn't extracted
+      if (category === undefined && appType === 'web' && this.browserAppNames.has(normalizedName)) {
+        ruleKey = `${normalizedName}:desktop`;
+        category = rules.get(ruleKey);
+      }
       if (category !== undefined) {
         return this.mapCategory(category);
       }
@@ -328,7 +349,6 @@ export class AppCategorizationService {
     try {
       // Get user's teams
       const teams = await this.getUserTeams(tenantId, userId);
-
       if (teams.length === 0) {
         // No teams, return empty map
         const emptyMap = new Map<string, RuleAppCategory>();

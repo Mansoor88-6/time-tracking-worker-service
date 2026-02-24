@@ -29,7 +29,6 @@ export enum RuleType {
 @Index(['teamId', 'appType'])
 @Index(['collectionId'])
 @Index(['ruleType'])
-@Index(['isDomainRule'])
 @Unique(['teamId', 'appName', 'appType'])
 export class TeamProductivityRule {
   @PrimaryGeneratedColumn()
@@ -65,9 +64,6 @@ export class TeamProductivityRule {
 
   @Column({ type: 'varchar', length: 500, nullable: true, name: 'pattern' })
   pattern?: string; // For URL patterns, e.g., "github.com/*/issues"
-
-  @Column({ type: 'boolean', default: false, name: 'is_domain_rule' })
-  isDomainRule: boolean; // Quick flag for domain-only rules
 
   @Column({ type: 'timestamp', name: 'createdAt' })
   createdAt: Date;

@@ -79,20 +79,21 @@ export class StatsController {
   @Get('app-usage')
   async getAppUsage(@Query() query: StatsQueryDto) {
     const startTime = Date.now();
-
-    // Use today's date if not provided
+    const useRange = !!query.startDate && !!query.endDate;
     const date = query.date || this.getTodayDateString();
 
     this.logger.log(
-      `📱 App usage request: tenant=${query.tenantId}, user=${query.userId}, date=${date}, tz=${query.tz || 'UTC'}`,
+      `📱 App usage request: tenant=${query.tenantId}, user=${query.userId}, ${useRange ? `range=${query.startDate}-${query.endDate}` : `date=${date}`}, tz=${query.tz || 'UTC'}`,
     );
 
     try {
       const appUsage = await this.statsService.getAppUsageStats(
         query.tenantId,
         query.userId,
-        date,
+        useRange ? undefined : date,
         query.tz,
+        query.startDate,
+        query.endDate,
       );
 
       const duration = Date.now() - startTime;

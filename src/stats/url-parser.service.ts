@@ -37,7 +37,8 @@ export class URLParserService {
       const urlObj = new URL(urlToParse);
       const domain = this.normalizeDomain(urlObj.hostname);
       const path = urlObj.pathname || '/';
-      const fullPath = domain + path;
+      // Include query string in fullPath so exact-URL rules match (e.g. ?tab=repositories)
+      const fullPath = domain + path + (urlObj.search || '');
 
       return {
         domain,
@@ -185,9 +186,10 @@ export class URLParserService {
     }
 
     const normalizedPattern = pattern.toLowerCase().trim();
+    const normalizedFullPath = parsed.fullPath.toLowerCase();
 
     // Try matching full path
-    if (parsed.fullPath === normalizedPattern) {
+    if (normalizedFullPath === normalizedPattern) {
       return true;
     }
 
@@ -196,7 +198,7 @@ export class URLParserService {
       /^https?:\/\//,
       '',
     );
-    if (parsed.fullPath === patternWithoutProtocol) {
+    if (normalizedFullPath === patternWithoutProtocol) {
       return true;
     }
 

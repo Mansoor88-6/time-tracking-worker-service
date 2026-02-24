@@ -3,7 +3,12 @@ import { ConfigService } from '@nestjs/config';
 import { StatsRepository } from './stats.repository';
 import { AppCategorizationService } from './app-categorization.service';
 import type { DashboardStats } from './interfaces/dashboard-stats.interface';
-import type { AppUsageStats } from './interfaces/app-usage.interface';
+import type {
+  AppUsage,
+  AppUsageStats,
+  AppCategory,
+  UrlBreakdown,
+} from './interfaces/app-usage.interface';
 
 /**
  * Stats Service
@@ -97,12 +102,69 @@ export class StatsService {
     );
 
     // Fetch stats from repository
-    const stats = await this.statsRepository.getDashboardStats(
+    let stats = await this.statsRepository.getDashboardStats(
       tenantId,
       userId,
       startTime,
       endTime,
     );
+
+    // Use rule-based totals from app usage so top cards always match app usage (single date or range)
+    let appUsage: AppUsageStats | null = null;
+    try {
+      if (useDateRange && startDate && endDate) {
+        appUsage = await this.getAppUsageStats(
+          tenantId,
+          userId,
+          undefined,
+          timezone,
+          startDate,
+          endDate,
+        );
+      } else if (date) {
+        appUsage = await this.getAppUsageStats(
+          tenantId,
+          userId,
+          date,
+          timezone,
+        );
+      }
+    } catch (err) {
+      this.logger.warn(
+        `App usage for rule-based stats failed, using repo stats: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    if (appUsage) {
+      stats = {
+        ...stats,
+        productiveTimeMs: appUsage.totals.productive ?? 0,
+        unproductiveTimeMs: appUsage.totals.unproductive ?? 0,
+        neutralTimeMs: appUsage.totals.neutral ?? 0,
+        productivityScorePct: Math.min(
+          100,
+          Math.max(
+            0,
+            stats.deskTimeMs > 0
+              ? Math.round(
+                  (appUsage.totals.productive / stats.deskTimeMs) * 100,
+                )
+              : 0,
+          ),
+        ),
+        effectivenessPct: Math.min(
+          100,
+          Math.max(
+            0,
+            stats.timeAtWorkMs > 0
+              ? Math.round(
+                  (appUsage.totals.productive / stats.timeAtWorkMs) * 100,
+                )
+              : 0,
+          ),
+        ),
+      };
+    }
 
     this.logger.log(
       `📊 Stats calculated: arrivalTime=${stats.arrivalTime?.toISOString() || 'null'}, events=${stats.productiveTimeMs > 0 || stats.deskTimeMs > 0 ? 'found' : 'none'}`,
@@ -229,21 +291,29 @@ export class StatsService {
   }
 
   /**
-   * Get app usage statistics for a user for a specific date in their timezone
+   * Get app usage statistics for a user for a date or date range in their timezone
    *
    * @param tenantId - Tenant ID
    * @param userId - User ID
-   * @param date - Date string in YYYY-MM-DD format
+   * @param date - Date string in YYYY-MM-DD format (used when no range)
    * @param timezone - IANA timezone (e.g., 'Asia/Karachi'), defaults to UTC
+   * @param startDate - Start date for range (optional)
+   * @param endDate - End date for range (optional)
    * @returns App usage statistics grouped by category
    */
   async getAppUsageStats(
     tenantId: number,
     userId: number,
-    date: string,
+    date: string | undefined,
     timezone?: string,
+    startDate?: string,
+    endDate?: string,
   ): Promise<AppUsageStats> {
-    const cacheKey = `${tenantId}:${userId}:${date}:${timezone || 'UTC'}:app-usage`;
+    const useRange = !!startDate && !!endDate;
+    const singleDate = date || new Date().toISOString().slice(0, 10);
+    const cacheKey = useRange
+      ? `${tenantId}:${userId}:${startDate}:${endDate}:${timezone || 'UTC'}:app-usage`
+      : `${tenantId}:${userId}:${singleDate}:${timezone || 'UTC'}:app-usage`;
 
     // Check cache
     const cached = this.appUsageCache.get(cacheKey);
@@ -258,8 +328,9 @@ export class StatsService {
       this.logger.debug(`App usage cache expired for ${cacheKey}, fetching fresh data`);
     }
 
-    // Calculate timezone-aware day boundaries (same logic as dashboard stats)
-    const { startTime, endTime } = this.getDayBoundaries(date, timezone);
+    const { startTime, endTime } = useRange
+      ? this.getDateRangeBoundaries(startDate!, endDate!, timezone)
+      : this.getDayBoundaries(singleDate, timezone);
 
     this.logger.log(
       `🔍 Querying app usage: UTC ${startTime.toISOString()} to ${endTime.toISOString()}`,
@@ -288,39 +359,78 @@ export class StatsService {
     // Limit to top 20 apps per category for performance
     const maxAppsPerCategory = 20;
 
+    type CategoryBucket = { productiveTimeMs: number; urlBreakdown: UrlBreakdown[] };
+
     for (const app of rawAppUsage) {
-      // For web apps, extract URL from breakdown for URL-based rule matching
-      // Use the most common URL (first in sorted breakdown)
-      const url = app.appType === 'web' && app.urlBreakdown.length > 0
-        ? app.urlBreakdown[0].url || null
-        : undefined;
+      if (app.appType === 'desktop') {
+        // Desktop: one category per app (no URL)
+        const category = await this.appCategorizationService.categorizeApp(
+          tenantId,
+          userId,
+          app.appName,
+          app.appType,
+          undefined,
+        );
+        const appUsage: AppUsage = { ...app, category };
+        switch (category) {
+          case 'productive':
+            categorized.productive.push(appUsage);
+            categorized.totals.productive += app.productiveTimeMs;
+            break;
+          case 'unproductive':
+            categorized.unproductive.push(appUsage);
+            categorized.totals.unproductive += app.productiveTimeMs;
+            break;
+          case 'neutral':
+            categorized.neutral.push(appUsage);
+            categorized.totals.neutral += app.productiveTimeMs;
+            break;
+        }
+        continue;
+      }
 
-      const category = await this.appCategorizationService.categorizeApp(
-        tenantId,
-        userId,
-        app.appName,
-        app.appType,
-        url || undefined,
-      );
-
-      const appUsage = {
-        ...app,
-        category,
+      // Web: categorize per URL, then emit one row per (domain, category)
+      const buckets: Record<AppCategory, CategoryBucket> = {
+        productive: { productiveTimeMs: 0, urlBreakdown: [] },
+        unproductive: { productiveTimeMs: 0, urlBreakdown: [] },
+        neutral: { productiveTimeMs: 0, urlBreakdown: [] },
       };
 
-      switch (category) {
-        case 'productive':
-          categorized.productive.push(appUsage);
-          categorized.totals.productive += app.productiveTimeMs;
-          break;
-        case 'unproductive':
-          categorized.unproductive.push(appUsage);
-          categorized.totals.unproductive += app.productiveTimeMs;
-          break;
-        case 'neutral':
-          categorized.neutral.push(appUsage);
-          categorized.totals.neutral += app.productiveTimeMs;
-          break;
+      if (app.urlBreakdown.length === 0) {
+        // No breakdown: fall back to domain-only categorization
+        const category = await this.appCategorizationService.categorizeApp(
+          tenantId,
+          userId,
+          app.appName,
+          app.appType,
+          undefined,
+        );
+        buckets[category].productiveTimeMs = app.productiveTimeMs;
+      } else {
+        for (const entry of app.urlBreakdown) {
+          const category = await this.appCategorizationService.categorizeApp(
+            tenantId,
+            userId,
+            app.appName,
+            app.appType,
+            entry.url ?? undefined,
+          );
+          buckets[category].productiveTimeMs += entry.productiveTimeMs;
+          buckets[category].urlBreakdown.push(entry);
+        }
+      }
+
+      for (const category of ['productive', 'unproductive', 'neutral'] as const) {
+        const bucket = buckets[category];
+        if (bucket.productiveTimeMs <= 0) continue;
+        categorized[category].push({
+          appName: app.appName,
+          appType: app.appType,
+          productiveTimeMs: bucket.productiveTimeMs,
+          category,
+          urlBreakdown: bucket.urlBreakdown,
+        });
+        categorized.totals[category] += bucket.productiveTimeMs;
       }
     }
 
@@ -350,12 +460,16 @@ export class StatsService {
   }
 
   /**
-   * Clear all cache entries
+   * Clear all cache entries (dashboard stats and app usage)
    */
   clearAllCache(): void {
     const size = this.cache.size;
+    const appUsageSize = this.appUsageCache.size;
     this.cache.clear();
-    this.logger.debug(`Cleared all cache entries (${size} entries)`);
+    this.appUsageCache.clear();
+    this.logger.debug(
+      `Cleared all cache entries (dashboard: ${size}, app usage: ${appUsageSize})`,
+    );
   }
 
   /**
