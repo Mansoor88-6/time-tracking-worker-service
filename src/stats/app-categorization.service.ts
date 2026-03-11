@@ -26,126 +26,6 @@ export class AppCategorizationService {
   private readonly cacheExpiry = new Map<string, number>();
   private readonly CACHE_TTL_MS = 60000; // 1 minute cache
 
-  // Fallback: Productive desktop applications (for backward compatibility)
-  private readonly productiveDesktopApps = new Set([
-    'cursor',
-    'code',
-    'visual studio code',
-    'vscode',
-    'intellij',
-    'idea',
-    'webstorm',
-    'pycharm',
-    'android studio',
-    'xcode',
-    'sublime text',
-    'atom',
-    'vim',
-    'neovim',
-    'emacs',
-    'terminal',
-    'windows terminal',
-    'windowsterminal',
-    'powershell',
-    'cmd',
-    'iterm',
-    'dbeaver',
-    'datagrip',
-    'postman',
-    'insomnia',
-    'fiddler',
-    'wireshark',
-    'docker',
-    'kubernetes',
-    'git',
-    'github desktop',
-    'sourcetree',
-    'tortoisegit',
-  ]);
-
-  // Fallback: Unproductive desktop applications
-  private readonly unproductiveDesktopApps = new Set([
-    'steam',
-    'epic games launcher',
-    'discord',
-    'slack',
-    'telegram',
-    'whatsapp',
-    'spotify',
-    'itunes',
-    'netflix',
-    'vlc',
-    'media player',
-  ]);
-
-  // Fallback: Productive web domains
-  private readonly productiveWebDomains = new Set([
-    'github.com',
-    'gitlab.com',
-    'bitbucket.org',
-    'stackoverflow.com',
-    'stackexchange.com',
-    'dev.to',
-    'medium.com',
-    'docs.google.com',
-    'confluence',
-    'jira',
-    'notion.so',
-    'atlassian.com',
-    'azure.com',
-    'aws.amazon.com',
-    'cloud.google.com',
-    'digitalocean.com',
-    'heroku.com',
-    'vercel.com',
-    'netlify.com',
-    'npmjs.com',
-    'pypi.org',
-    'maven.apache.org',
-    'nuget.org',
-    'docker.com',
-    'kubernetes.io',
-    'terraform.io',
-    'ansible.com',
-    'redhat.com',
-    'microsoft.com',
-    'developer.mozilla.org',
-    'w3.org',
-    'mdn.io',
-    'react.dev',
-    'angular.io',
-    'vuejs.org',
-    'nodejs.org',
-    'python.org',
-    'golang.org',
-    'rust-lang.org',
-    'typescriptlang.org',
-  ]);
-
-  // Fallback: Unproductive web domains
-  private readonly unproductiveWebDomains = new Set([
-    'facebook.com',
-    'twitter.com',
-    'x.com',
-    'instagram.com',
-    'linkedin.com',
-    'tiktok.com',
-    'snapchat.com',
-    'reddit.com',
-    'youtube.com',
-    'netflix.com',
-    'hulu.com',
-    'disney.com',
-    'amazon.com',
-    'ebay.com',
-    'etsy.com',
-    'pinterest.com',
-    'tumblr.com',
-    'twitch.tv',
-    'discord.com',
-    'messenger.com',
-  ]);
-
   // Browser names: when stats repo groups browser activity with no domain it uses appType 'web'
   // Team rules are often created as desktop (e.g. "Chrome" desktop = unproductive). We match those here.
   private readonly browserAppNames = new Set([
@@ -161,33 +41,6 @@ export class AppCategorizationService {
     'brave',
     'vivaldi',
     'tor browser',
-  ]);
-
-  // Fallback: Neutral desktop applications
-  private readonly neutralDesktopApps = new Set([
-    'explorer',
-    'windows explorer',
-    'file explorer',
-    'finder',
-    'settings',
-    'control panel',
-    'task manager',
-    'system',
-    'windows',
-    'microsoft edge',
-    'edge',
-    'chrome',
-    'firefox',
-    'safari',
-    'opera',
-    'brave',
-    'outlook',
-    'thunderbird',
-    'mail',
-    'calendar',
-    'notes',
-    'notepad',
-    'textedit',
   ]);
 
   constructor(
@@ -223,21 +76,37 @@ export class AppCategorizationService {
     }
     const normalizedName = appName.toLowerCase().trim();
 
+    this.logger.debug(
+      `categorizeApp start tenant=${tenantId} user=${userId} appName="${appName}" normalized="${normalizedName}" appType=${appType} url=${url ?? 'N/A'}`,
+    );
+
     // Get user's team rules (with caching)
     const rules = await this.getUserTeamRules(tenantId, userId);
     const rulesFull = await this.getUserTeamRulesFull(tenantId, userId);
+
+    this.logger.debug(
+      `categorizeApp rules loaded tenant=${tenantId} user=${userId} rules.size=${rules.size} rulesFullCount=${rulesFull.length}`,
+    );
 
     // Priority 1: URL-based rules (if URL is provided)
     if (url && url.trim() !== '' && appType === 'web') {
       const urlMatch = this.matchURLRules(url, rulesFull);
       if (urlMatch !== null) {
-        return this.mapCategory(urlMatch);
+        const result = this.mapCategory(urlMatch);
+        this.logger.debug(
+          `categorizeApp URL rule match tenant=${tenantId} user=${userId} appType=${appType} url=${url} category=${result}`,
+        );
+        return result;
       }
 
       // Priority 2: Domain-based rules
       const domainMatch = this.matchDomainRules(url, rulesFull);
       if (domainMatch !== null) {
-        return this.mapCategory(domainMatch);
+        const result = this.mapCategory(domainMatch);
+        this.logger.debug(
+          `categorizeApp domain rule match tenant=${tenantId} user=${userId} url=${url} category=${result}`,
+        );
+        return result;
       }
     }
 
@@ -252,36 +121,44 @@ export class AppCategorizationService {
         category = rules.get(ruleKey);
       }
       if (category !== undefined) {
-        return this.mapCategory(category);
+        const result = this.mapCategory(category);
+        this.logger.debug(
+          `categorizeApp legacy app_name rule match tenant=${tenantId} user=${userId} key=${ruleKey} category=${result}`,
+        );
+        return result;
       }
     }
 
-    // Priority 4: Fallback rules
-    const fallbackCategory = this.categorizeWithFallback(normalizedName, appType);
+    // No matching rules: treat as unclassified and neutral until admin defines rules
+    // Get user's teams to determine teamId for tracking
+    const teams = await this.getUserTeams(tenantId, userId);
+    const teamId = teams.length > 0 ? teams[0].teamId : null;
 
-    // If fallback also returns neutral and we have no team rules, track as unclassified
-    if (fallbackCategory === 'neutral' && rules.size === 0 && rulesFull.length === 0) {
-      // Get user's teams to determine teamId for tracking
-      const teams = await this.getUserTeams(tenantId, userId);
-      const teamId = teams.length > 0 ? teams[0].teamId : null;
-
-      // Extract domain from URL or use appName
-      const domainToTrack = url && appType === 'web' 
+    // Extract domain from URL or use appName
+    const domainToTrack =
+      url && appType === 'web'
         ? this.urlParser.extractDomainFromURL(url) || normalizedName
         : normalizedName;
 
-      // Track as unclassified (async, don't wait)
-      this.unclassifiedTracker
-        .trackUnclassifiedApp(tenantId, userId, teamId, domainToTrack, appType as RuleAppType)
-        .catch((error) => {
-          this.logger.error(
-            `Failed to track unclassified app: ${domainToTrack}`,
-            error.stack,
-          );
-        });
-    }
+    this.logger.debug(
+      `categorizeApp no-rule match tenant=${tenantId} user=${userId} appType=${appType} track="${domainToTrack}" teamId=${teamId}`,
+    );
 
-    return fallbackCategory;
+    // Track as unclassified (async, don't wait). Any errors are logged but don't affect categorization.
+    this.unclassifiedTracker
+      .trackUnclassifiedApp(tenantId, userId, teamId, domainToTrack, appType as RuleAppType)
+      .catch((error) => {
+        this.logger.error(
+          `Failed to track unclassified app: ${domainToTrack}`,
+          error.stack,
+        );
+      });
+
+    // Until rules exist, all unmatched apps/domains are treated as neutral in analytics.
+    this.logger.debug(
+      `categorizeApp result (unclassified neutral) tenant=${tenantId} user=${userId} appName="${appName}" appType=${appType}`,
+    );
+    return 'neutral';
   }
 
   /**
@@ -342,6 +219,9 @@ export class AppCategorizationService {
     const expiry = this.cacheExpiry.get(cacheKey) || 0;
 
     if (cached && expiry > now) {
+      this.logger.debug(
+        `getUserTeamRules cache hit tenant=${tenantId} user=${userId} rules.size=${cached.size}`,
+      );
       return cached;
     }
 
@@ -409,6 +289,10 @@ export class AppCategorizationService {
       this.rulesCacheFull.set(cacheKey, rules);
       this.cacheExpiry.set(cacheKey, now + this.CACHE_TTL_MS);
 
+      this.logger.debug(
+        `getUserTeamRules cache miss tenant=${tenantId} user=${userId} teams=${teams.length} teamIds=${teamIds.join(',')} collections=${collectionIds.length} rules=${rules.length} mappedKeys=${rulesMap.size}`,
+      );
+
       return rulesMap;
     } catch (error) {
       this.logger.error(
@@ -435,6 +319,9 @@ export class AppCategorizationService {
     const expiry = this.cacheExpiry.get(cacheKey) || 0;
 
     if (cached && expiry > now) {
+      this.logger.debug(
+        `getUserTeamRulesFull cache hit tenant=${tenantId} user=${userId} rulesFullCount=${cached.length}`,
+      );
       return cached;
     }
 
@@ -488,6 +375,10 @@ export class AppCategorizationService {
       this.rulesCacheFull.set(cacheKey, rules);
       this.cacheExpiry.set(cacheKey, now + this.CACHE_TTL_MS);
 
+      this.logger.debug(
+        `getUserTeamRulesFull cache miss tenant=${tenantId} user=${userId} teams=${teams.length} teamIds=${teamIds.join(',')} collections=${collectionIds.length} rules=${rules.length}`,
+      );
+
       return rules;
     } catch (error) {
       this.logger.error(
@@ -535,90 +426,6 @@ export class AppCategorizationService {
       default:
         return 'neutral';
     }
-  }
-
-  /**
-   * Categorize using fallback rules (backward compatibility)
-   */
-  private categorizeWithFallback(
-    normalizedName: string,
-    appType: AppType,
-  ): AppCategory {
-    if (appType === 'desktop') {
-      // Check productive apps first
-      if (this.productiveDesktopApps.has(normalizedName)) {
-        return 'productive';
-      }
-
-      // Check unproductive apps
-      if (this.unproductiveDesktopApps.has(normalizedName)) {
-        return 'unproductive';
-      }
-
-      // Check neutral apps
-      if (this.neutralDesktopApps.has(normalizedName)) {
-        return 'neutral';
-      }
-
-      // Check partial matches for productive apps
-      for (const productiveApp of this.productiveDesktopApps) {
-        if (normalizedName.includes(productiveApp) || productiveApp.includes(normalizedName)) {
-          return 'productive';
-        }
-      }
-
-      // Check partial matches for unproductive apps
-      for (const unproductiveApp of this.unproductiveDesktopApps) {
-        if (
-          normalizedName.includes(unproductiveApp) ||
-          unproductiveApp.includes(normalizedName)
-        ) {
-          return 'unproductive';
-        }
-      }
-    } else if (appType === 'web') {
-      // Extract domain from URL if needed
-      let domain = normalizedName;
-      try {
-        if (normalizedName.startsWith('http://') || normalizedName.startsWith('https://')) {
-          const url = new URL(normalizedName);
-          domain = url.hostname.replace('www.', '');
-        } else if (normalizedName.includes('/')) {
-          domain = normalizedName.split('/')[0].replace('www.', '');
-        } else {
-          domain = normalizedName.replace('www.', '');
-        }
-      } catch {
-        domain = normalizedName.replace('www.', '');
-      }
-
-      // Check productive domains
-      if (this.productiveWebDomains.has(domain)) {
-        return 'productive';
-      }
-
-      // Check unproductive domains
-      if (this.unproductiveWebDomains.has(domain)) {
-        return 'unproductive';
-      }
-
-      // Check partial matches for productive domains
-      for (const productiveDomain of this.productiveWebDomains) {
-        if (domain.includes(productiveDomain) || productiveDomain.includes(domain)) {
-          return 'productive';
-        }
-      }
-
-      // Check partial matches for unproductive domains
-      for (const unproductiveDomain of this.unproductiveWebDomains) {
-        if (domain.includes(unproductiveDomain) || unproductiveDomain.includes(domain)) {
-          return 'unproductive';
-        }
-      }
-    }
-
-    // Default to neutral for unknown apps
-    return 'neutral';
   }
 
   /**
