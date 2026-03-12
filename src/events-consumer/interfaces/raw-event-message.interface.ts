@@ -25,6 +25,14 @@ export interface RawEvent {
   duration?: number; // milliseconds
   url?: string;
   projectId?: string;
+  source?: 'browser' | 'app';
+  tabId?: number;
+  windowId?: number;
+  sequence?: number;
+  startTime?: number; // Unix timestamp in milliseconds
+  endTime?: number; // Unix timestamp in milliseconds
+  activeDuration?: number; // milliseconds
+  idleDuration?: number; // milliseconds
 }
 
 export interface RawEventMessage {

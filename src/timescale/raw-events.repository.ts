@@ -51,6 +51,14 @@ export class RawEventsRepository {
         entity.url = event.url;
         entity.durationMs = event.duration;
         entity.projectId = event.projectId;
+        entity.source = event.source;
+        entity.tabId = event.tabId;
+        entity.windowId = event.windowId;
+        entity.sequence = event.sequence;
+        entity.startTime = event.startTime;
+        entity.endTime = event.endTime;
+        entity.activeDurationMs = event.activeDuration;
+        entity.idleDurationMs = event.idleDuration;
         return entity;
       });
 

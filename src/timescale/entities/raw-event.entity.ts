@@ -71,6 +71,30 @@ export class RawEventEntity {
   @Column({ type: 'varchar', length: 255, name: 'project_id', nullable: true })
   projectId?: string;
 
+  @Column({ type: 'varchar', length: 20, name: 'source', nullable: true })
+  source?: 'browser' | 'app';
+
+  @Column({ type: 'integer', name: 'tab_id', nullable: true })
+  tabId?: number;
+
+  @Column({ type: 'integer', name: 'window_id', nullable: true })
+  windowId?: number;
+
+  @Column({ type: 'bigint', name: 'sequence', nullable: true })
+  sequence?: number;
+
+  @Column({ type: 'bigint', name: 'start_time', nullable: true })
+  startTime?: number;
+
+  @Column({ type: 'bigint', name: 'end_time', nullable: true })
+  endTime?: number;
+
+  @Column({ type: 'bigint', name: 'active_duration_ms', nullable: true })
+  activeDurationMs?: number;
+
+  @Column({ type: 'bigint', name: 'idle_duration_ms', nullable: true })
+  idleDurationMs?: number;
+
   /**
    * Timestamp when the event was ingested by the worker service.
    * Useful for monitoring ingestion latency and supporting future aggregation windows.
