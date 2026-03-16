@@ -8,12 +8,28 @@ export interface DashboardStats {
   arrivalTime: Date | null; // First non-offline event time
   leftTime: Date | null; // Last non-offline event time, or null if online
   isOnline: boolean; // True if user is currently active (within activity window)
-  productiveTimeMs: number; // Rule-based (single date) or sum of active events (date range)
-  deskTimeMs: number; // Sum of duration_ms where status IN ('active','idle','away')
-  timeAtWorkMs: number; // Wall-clock presence excluding offline gaps
+  /**
+   * Total time that was actively spent on apps/domains and classified as productive.
+   * Implementation detail: backed by active_duration_ms (with fallback to duration_ms for legacy rows).
+   */
+  productiveTimeMs: number;
+  /**
+   * Total tracked time at the machine while not offline.
+   * Implementation detail: backed by total duration (active + idle/away), still using duration_ms as the presence baseline.
+   */
+  deskTimeMs: number;
+  /**
+   * Wall-clock presence excluding offline gaps (from arrival to last activity/now),
+   * regardless of whether time was active or idle.
+   */
+  timeAtWorkMs: number;
   productivityScorePct: number; // productiveTimeMs / deskTimeMs * 100 (0-100)
   effectivenessPct: number; // productiveTimeMs / timeAtWorkMs * 100 (0-100)
-  projectsTimeMs: number; // Sum of duration_ms where status='active' AND project_id IS NOT NULL
+  /**
+   * Total active time on events that are associated with a project.
+   * Implementation detail: backed by active_duration_ms for status='active' events with project_id.
+   */
+  projectsTimeMs: number;
   /** Rule-based totals (present when single-date); aligns with app usage totals */
   unproductiveTimeMs?: number;
   neutralTimeMs?: number;

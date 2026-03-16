@@ -113,4 +113,44 @@ export class StatsController {
       throw error;
     }
   }
+
+  @Get('timeline')
+  async getTimeline(@Query() query: StatsQueryDto) {
+    const startTime = Date.now();
+    const useRange = !!query.startDate && !!query.endDate;
+    const date = query.date || this.getTodayDateString();
+
+    this.logger.log(
+      `📈 Timeline request: tenant=${query.tenantId}, user=${query.userId}, ${
+        useRange ? `range=${query.startDate}-${query.endDate}` : `date=${date}`
+      }, tz=${query.tz || 'UTC'}`,
+    );
+
+    try {
+      const slots = await this.statsService.getTimelineSlots(
+        query.tenantId,
+        query.userId,
+        useRange ? undefined : date,
+        query.tz,
+        query.startDate,
+        query.endDate,
+      );
+
+      const duration = Date.now() - startTime;
+      this.logger.log(
+        `✅ Timeline response in ${duration}ms for tenant ${query.tenantId}, user ${query.userId}`,
+      );
+
+      return slots;
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `❌ Timeline request failed after ${duration}ms: ${errorMessage}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      throw error;
+    }
+  }
 }

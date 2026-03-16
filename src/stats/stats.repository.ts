@@ -4,7 +4,15 @@ import { Repository, Between } from 'typeorm';
 import { RawEventEntity } from '../timescale/entities/raw-event.entity';
 import type { DashboardStats } from './interfaces/dashboard-stats.interface';
 import type { RawAppUsage, UrlBreakdown } from './interfaces/app-usage.interface';
+import { AppCategorizationService } from './app-categorization.service';
 
+export interface TimelineSlotDto {
+  startMinuteFromMidnight: number;
+  productivePct: number;
+  neutralPct: number;
+  unproductivePct: number;
+  online: boolean;
+}
 /**
  * Stats Repository
  *
@@ -18,6 +26,7 @@ export class StatsRepository {
   constructor(
     @InjectRepository(RawEventEntity)
     private readonly rawEventRepository: Repository<RawEventEntity>,
+    private readonly appCategorizationService: AppCategorizationService,
   ) {}
 
   /**
@@ -100,7 +109,7 @@ export class StatsRepository {
 
       const leftTime = isOnline ? null : lastEventTime;
 
-      // Helper function to safely convert durationMs to number
+      // Helper function to safely convert numeric DB values (bigint / number / string) to number
       const toNumber = (value: bigint | number | string | null | undefined): number => {
         if (value === null || value === undefined) return 0;
         if (typeof value === 'number') return value;
@@ -112,19 +121,27 @@ export class StatsRepository {
         return 0;
       };
 
-      // Aggregate productive time (status='active')
-      const productiveTimeMs = events
-        .filter((e) => e.status === 'active' && e.durationMs)
-        .reduce((sum, e) => sum + toNumber(e.durationMs), 0);
+      // Helper to get active duration with backward compatibility:
+      // prefer activeDurationMs, fall back to durationMs for legacy events.
+      const getActiveDuration = (e: RawEventEntity): number => {
+        if (e.activeDurationMs !== null && e.activeDurationMs !== undefined) {
+          return toNumber(e.activeDurationMs);
+        }
+        return toNumber(e.durationMs);
+      };
 
-      // Aggregate desk time (status IN ('active','idle','away'))
+      // Aggregate productive time from active duration (status='active')
+      const productiveTimeMs = events
+        .filter((e) => e.status === 'active')
+        .reduce((sum, e) => sum + getActiveDuration(e), 0);
+
+      // Aggregate desk time (status IN ('active','idle','away')) based on total tracked duration
       const deskTimeMs = events
         .filter(
           (e) =>
             (e.status === 'active' ||
               e.status === 'idle' ||
-              e.status === 'away') &&
-            e.durationMs,
+              e.status === 'away'),
         )
         .reduce((sum, e) => sum + toNumber(e.durationMs), 0);
 
@@ -149,16 +166,19 @@ export class StatsRepository {
         timeAtWorkMs = Math.max(0, endTime.getTime() - arrivalTime.getTime());
       }
 
-      // Calculate projects time (status='active' AND project_id IS NOT NULL)
+      // Calculate projects time (status='active' AND project_id IS NOT NULL) from active duration
       const projectsTimeMs = events
         .filter(
           (e) =>
             e.status === 'active' &&
             e.projectId !== null &&
             e.projectId !== undefined &&
-            e.durationMs,
+            (e.activeDurationMs !== null &&
+              e.activeDurationMs !== undefined
+              ? true
+              : !!e.durationMs),
         )
-        .reduce((sum, e) => sum + toNumber(e.durationMs), 0);
+        .reduce((sum, e) => sum + getActiveDuration(e), 0);
 
       // Calculate percentages
       const productivityScorePct =
@@ -254,14 +274,14 @@ export class StatsRepository {
           time: Between(startTime, endTime),
           status: 'active', // Only count active time for app usage
         },
-        select: ['application', 'url', 'title', 'durationMs'],
+        select: ['application', 'url', 'title', 'durationMs', 'activeDurationMs'],
       });
 
       this.logger.log(
         `Found ${events.length} active events for app usage in range ${startTime.toISOString()} to ${endTime.toISOString()}`,
       );
 
-      // Helper function to safely convert durationMs to number
+      // Helper function to safely convert numeric DB values (bigint / number / string) to number
       const toNumber = (
         value: bigint | number | string | null | undefined,
       ): number => {
@@ -516,7 +536,9 @@ export class StatsRepository {
       >();
 
       for (const event of events) {
-        const durationMs = toNumber(event.durationMs);
+        // Prefer active duration when available; fall back to durationMs for legacy events.
+        const activeDuration = event.activeDurationMs ?? event.durationMs;
+        const durationMs = toNumber(activeDuration);
         if (durationMs <= 0) continue;
 
         let appName: string | null = null;
@@ -633,6 +655,218 @@ export class StatsRepository {
         error instanceof Error ? error.message : String(error);
       this.logger.error(
         `❌ App usage query failed after ${queryDuration}ms for tenant ${tenantId}, user ${userId}: ${errorMessage}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Get per-slot (5-minute) timeline statistics for a user within a time range.
+   * For now this uses presence only: productivePct reflects the fraction of tracked
+   * time in the slot that was active vs (active + idle/away). Neutral and
+   * unproductive are left at 0; rule-based categories can be added later.
+   */
+  async getTimelineSlots(
+    tenantId: number,
+    userId: number,
+    startTime: Date,
+    endTime: Date,
+  ): Promise<TimelineSlotDto[]> {
+    const queryStart = Date.now();
+    const SLOT_MINUTES = 5;
+    const slotMs = SLOT_MINUTES * 60 * 1000;
+    const rangeStartMs = startTime.getTime();
+    const rangeEndMs = endTime.getTime();
+
+    try {
+      const events = await this.rawEventRepository.find({
+        where: {
+          tenantId,
+          userId,
+          time: Between(startTime, endTime),
+        },
+        order: { time: 'ASC' },
+      });
+
+      this.logger.log(
+        `Found ${events.length} events for timeline in range ${startTime.toISOString()} to ${endTime.toISOString()}`,
+      );
+
+      const toNumber = (value: bigint | number | string | null | undefined): number => {
+        if (value === null || value === undefined) return 0;
+        if (typeof value === 'number') return value;
+        if (typeof value === 'bigint') return Number(value);
+        if (typeof value === 'string') {
+          const parsed = parseInt(value, 10);
+          return isNaN(parsed) ? 0 : parsed;
+        }
+        return 0;
+      };
+
+      type SlotAccum = {
+        productiveMs: number;
+        neutralMs: number;
+        unproductiveMs: number;
+        idleMs: number;
+      };
+      const slotMap = new Map<number, SlotAccum>();
+
+      for (const e of events) {
+        const durationMs = toNumber(e.durationMs);
+        if (durationMs <= 0) continue;
+
+        const activeDurationMs = toNumber(e.activeDurationMs);
+        const idleDurationMs = toNumber(e.idleDurationMs);
+
+        // Derive how much of this event's wall-clock duration is active vs idle.
+        const totalLabeled = activeDurationMs + idleDurationMs;
+        const activeRatio =
+          durationMs > 0
+            ? totalLabeled > 0
+              ? Math.min(1, activeDurationMs / durationMs)
+              : 1 // legacy events: treat full duration as active
+            : 0;
+        const idleRatio =
+          durationMs > 0
+            ? totalLabeled > 0
+              ? Math.min(1, idleDurationMs / durationMs)
+              : 0
+            : 0;
+
+        // Derive event start/end in ms, falling back to recorded time + duration.
+        const eventStartMs =
+          e.startTime !== null && e.startTime !== undefined
+            ? toNumber(e.startTime)
+            : e.time.getTime();
+        const rawEndMs =
+          e.endTime !== null && e.endTime !== undefined
+            ? toNumber(e.endTime)
+            : eventStartMs + durationMs;
+
+        // Clip to requested range
+        const clippedStart = Math.max(eventStartMs, rangeStartMs);
+        const clippedEnd = Math.min(rawEndMs, rangeEndMs);
+        if (clippedEnd <= clippedStart) continue;
+
+        // This event segment may span multiple 5‑minute slots; walk slot-by-slot.
+        let segmentStart = clippedStart;
+        while (segmentStart < clippedEnd) {
+          const slotIndex = Math.floor((segmentStart - rangeStartMs) / slotMs);
+          if (slotIndex < 0) break;
+
+          const slotStart = rangeStartMs + slotIndex * slotMs;
+          const slotEnd = slotStart + slotMs;
+          const segmentEnd = Math.min(clippedEnd, slotEnd);
+          const overlapMs = segmentEnd - segmentStart;
+
+          const accum =
+            slotMap.get(slotIndex) ?? {
+              productiveMs: 0,
+              neutralMs: 0,
+              unproductiveMs: 0,
+              idleMs: 0,
+            };
+
+          const activePortionMs = overlapMs * activeRatio;
+          const idlePortionMs = overlapMs * idleRatio;
+
+          if (e.status === 'active' && activePortionMs > 0) {
+            const appType: 'desktop' | 'web' =
+              e.source === 'browser' ? 'web' : 'desktop';
+            const appName =
+              e.application?.trim() ||
+              (appType === 'web' ? 'browser' : 'unknown');
+
+            const category = await this.appCategorizationService.categorizeApp(
+              tenantId,
+              userId,
+              appName,
+              appType,
+              e.url ?? undefined,
+            );
+
+            switch (category) {
+              case 'productive':
+                accum.productiveMs += activePortionMs;
+                break;
+              case 'unproductive':
+                accum.unproductiveMs += activePortionMs;
+                break;
+              case 'neutral':
+              default:
+                accum.neutralMs += activePortionMs;
+                break;
+            }
+          }
+
+          if (
+            (e.status === 'active' || e.status === 'idle' || e.status === 'away') &&
+            idlePortionMs > 0
+          ) {
+            accum.idleMs += idlePortionMs;
+          }
+
+          slotMap.set(slotIndex, accum);
+          segmentStart = segmentEnd;
+        }
+      }
+
+      const totalSlots = Math.ceil((rangeEndMs - rangeStartMs) / slotMs);
+      const slots: TimelineSlotDto[] = [];
+
+      for (let i = 0; i < totalSlots; i++) {
+        const accum =
+          slotMap.get(i) ?? {
+            productiveMs: 0,
+            neutralMs: 0,
+            unproductiveMs: 0,
+            idleMs: 0,
+          };
+
+        const activeTotal =
+          accum.productiveMs + accum.neutralMs + accum.unproductiveMs;
+        const totalTracked = activeTotal + accum.idleMs;
+
+        // Express bars as fraction of the 5‑minute slot, so
+        // summed "area" over the day reflects real minutes.
+        let productivePct = accum.productiveMs / slotMs;
+        let neutralPct = accum.neutralMs / slotMs;
+        let unproductivePct = accum.unproductiveMs / slotMs;
+
+        // Guard against slight FP / overlap inflation.
+        const sum = productivePct + neutralPct + unproductivePct;
+        if (sum > 1) {
+          productivePct /= sum;
+          neutralPct /= sum;
+          unproductivePct /= sum;
+        }
+
+        const slotStartMs = rangeStartMs + i * slotMs;
+        const date = new Date(slotStartMs);
+        const startMinuteFromMidnight = date.getUTCHours() * 60 + date.getUTCMinutes();
+
+        slots.push({
+          startMinuteFromMidnight,
+          productivePct,
+          neutralPct,
+          unproductivePct,
+          online: totalTracked > 0,
+        });
+      }
+
+      const queryDuration = Date.now() - queryStart;
+      this.logger.log(
+        `✅ Timeline query completed in ${queryDuration}ms: ${slots.length} slots`,
+      );
+
+      return slots;
+    } catch (error) {
+      const queryDuration = Date.now() - queryStart;
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `❌ Timeline query failed after ${queryDuration}ms for tenant ${tenantId}, user ${userId}: ${errorMessage}`,
         error instanceof Error ? error.stack : undefined,
       );
       throw error;

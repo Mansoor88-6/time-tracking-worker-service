@@ -460,6 +460,37 @@ export class StatsService {
   }
 
   /**
+   * Get timeline slots (5-minute buckets) for a user for a given date or date range
+   * in their timezone. Uses the same boundary helpers as other stats methods.
+   */
+  async getTimelineSlots(
+    tenantId: number,
+    userId: number,
+    date: string | undefined,
+    timezone?: string,
+    startDate?: string,
+    endDate?: string,
+  ) {
+    const useRange = !!startDate && !!endDate;
+    const singleDate = date || new Date().toISOString().slice(0, 10);
+
+    const { startTime, endTime } = useRange
+      ? this.getDateRangeBoundaries(startDate!, endDate!, timezone)
+      : this.getDayBoundaries(singleDate, timezone);
+
+    this.logger.log(
+      `🔍 Querying timeline slots: UTC ${startTime.toISOString()} to ${endTime.toISOString()}`,
+    );
+
+    return this.statsRepository.getTimelineSlots(
+      tenantId,
+      userId,
+      startTime,
+      endTime,
+    );
+  }
+
+  /**
    * Clear all cache entries (dashboard stats and app usage)
    */
   clearAllCache(): void {
