@@ -13,6 +13,30 @@ export interface TimelineSlotDto {
   unproductivePct: number;
   online: boolean;
 }
+
+/**
+ * Minutes from local midnight for an instant, in the given IANA timezone.
+ * Day boundaries from getDayBoundaries use this same timezone; using UTC here
+ * made tooltips (and labels) disagree with the timeline.
+ */
+function minutesFromMidnightInTimezone(
+  instant: Date,
+  timeZone?: string,
+): number {
+  if (!timeZone) {
+    return instant.getUTCHours() * 60 + instant.getUTCMinutes();
+  }
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour: 'numeric',
+    minute: 'numeric',
+    hour12: false,
+  }).formatToParts(instant);
+  let hour = Number(parts.find((p) => p.type === 'hour')?.value ?? 0);
+  const minute = Number(parts.find((p) => p.type === 'minute')?.value ?? 0);
+  if (hour === 24) hour = 0;
+  return hour * 60 + minute;
+}
 /**
  * Stats Repository
  *
@@ -672,6 +696,7 @@ export class StatsRepository {
     userId: number,
     startTime: Date,
     endTime: Date,
+    timeZone?: string,
   ): Promise<TimelineSlotDto[]> {
     const queryStart = Date.now();
     const SLOT_MINUTES = 5;
@@ -843,8 +868,10 @@ export class StatsRepository {
         }
 
         const slotStartMs = rangeStartMs + i * slotMs;
-        const date = new Date(slotStartMs);
-        const startMinuteFromMidnight = date.getUTCHours() * 60 + date.getUTCMinutes();
+        const startMinuteFromMidnight = minutesFromMidnightInTimezone(
+          new Date(slotStartMs),
+          timeZone,
+        );
 
         slots.push({
           startMinuteFromMidnight,

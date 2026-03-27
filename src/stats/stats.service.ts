@@ -487,6 +487,7 @@ export class StatsService {
       userId,
       startTime,
       endTime,
+      timezone,
     );
   }
 
