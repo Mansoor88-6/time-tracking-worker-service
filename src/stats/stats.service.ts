@@ -1,6 +1,11 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { StatsRepository } from './stats.repository';
+import { RawEventsRepository } from '../timescale/raw-events.repository';
+import {
+  EventStatus,
+  RawEvent,
+} from '../events-consumer/interfaces/raw-event-message.interface';
 import { AppCategorizationService } from './app-categorization.service';
 import type { DashboardStats } from './interfaces/dashboard-stats.interface';
 import type {
@@ -35,6 +40,7 @@ export class StatsService {
     private readonly statsRepository: StatsRepository,
     private readonly configService: ConfigService,
     private readonly appCategorizationService: AppCategorizationService,
+    private readonly rawEventsRepository: RawEventsRepository,
   ) {
     // Cache TTL: 15-30 seconds (configurable via env)
     this.cacheTtlMs =
@@ -288,6 +294,64 @@ export class StatsService {
     if (deleted) {
       this.logger.debug(`Cache cleared for ${cacheKey}`);
     }
+  }
+
+  /**
+   * Insert a synthetic active event after admin approves an offline-time request (Option A).
+   * Categorization uses application prefix __offline_approval__:* in AppCategorizationService.
+   */
+  async insertManualOfflineEvent(params: {
+    tenantId: number;
+    userId: number;
+    requestId: number;
+    startMs: number;
+    endMs: number;
+    category: 'productive' | 'neutral' | 'unproductive';
+    description: string;
+  }): Promise<void> {
+    const {
+      tenantId,
+      userId,
+      requestId,
+      startMs,
+      endMs,
+      category,
+      description,
+    } = params;
+    if (endMs <= startMs) {
+      throw new BadRequestException('endMs must be greater than startMs');
+    }
+    const duration = endMs - startMs;
+    const application = `__offline_approval__:${category}`;
+    const event: RawEvent = {
+      deviceId: `offline-request-${requestId}`,
+      timestamp: startMs,
+      status: EventStatus.ACTIVE,
+      application,
+      title: description.slice(0, 500),
+      duration,
+      startTime: startMs,
+      endTime: endMs,
+      activeDuration: duration,
+      idleDuration: 0,
+      source: 'app',
+    };
+    const saved = await this.rawEventsRepository.saveBatch(
+      tenantId,
+      userId,
+      event.deviceId,
+      [event],
+    );
+    if (saved === 0) {
+      throw new BadRequestException(
+        'Event was not inserted (duplicate or conflict)',
+      );
+    }
+    const dateStr = new Date(startMs).toISOString().slice(0, 10);
+    this.clearCache(tenantId, userId, dateStr, 'UTC');
+    this.logger.log(
+      `Manual offline event inserted for tenant=${tenantId} user=${userId} request=${requestId}`,
+    );
   }
 
   /**

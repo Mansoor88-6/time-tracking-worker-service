@@ -76,6 +76,14 @@ export class AppCategorizationService {
     }
     const normalizedName = appName.toLowerCase().trim();
 
+    // Synthetic events from approved offline-time requests (see StatsService.insertManualOfflineEvent)
+    if (normalizedName.startsWith('__offline_approval__:')) {
+      const suffix = normalizedName.slice('__offline_approval__:'.length);
+      if (suffix.startsWith('productive')) return 'productive';
+      if (suffix.startsWith('unproductive')) return 'unproductive';
+      return 'neutral';
+    }
+
     this.logger.debug(
       `categorizeApp start tenant=${tenantId} user=${userId} appName="${appName}" normalized="${normalizedName}" appType=${appType} url=${url ?? 'N/A'}`,
     );

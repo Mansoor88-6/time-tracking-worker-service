@@ -8,9 +8,15 @@ import { AppCategorizationService } from './app-categorization.service';
 
 export interface TimelineSlotDto {
   startMinuteFromMidnight: number;
+  /** ISO 8601 instant for the start of this 5-minute bucket (stable across multi-day ranges). */
+  slotStartUtc: string;
   productivePct: number;
   neutralPct: number;
   unproductivePct: number;
+  /** Fraction of the 5-minute slot that was idle/away (0–1). */
+  idlePct: number;
+  /** Idle portion of the slot in milliseconds. */
+  idleMs: number;
   online: boolean;
 }
 
@@ -873,11 +879,17 @@ export class StatsRepository {
           timeZone,
         );
 
+        const idleMs = accum.idleMs;
+        const idlePct = Math.min(1, slotMs > 0 ? idleMs / slotMs : 0);
+
         slots.push({
           startMinuteFromMidnight,
+          slotStartUtc: new Date(slotStartMs).toISOString(),
           productivePct,
           neutralPct,
           unproductivePct,
+          idlePct,
+          idleMs,
           online: totalTracked > 0,
         });
       }

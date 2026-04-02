@@ -11,6 +11,7 @@ import { TeamProductivityRule } from '../backend-db/entities/team-productivity-r
 import { TeamMember } from '../backend-db/entities/team-member.entity';
 import { RuleCollectionTeam } from '../backend-db/entities/rule-collection-team.entity';
 import { URLParserService } from './url-parser.service';
+import { TimescaleModule } from '../timescale/timescale.module';
 
 /**
  * Stats Module
@@ -20,6 +21,7 @@ import { URLParserService } from './url-parser.service';
  */
 @Module({
   imports: [
+    TimescaleModule,
     TypeOrmModule.forFeature([RawEventEntity]),
     BackendDbModule,
     ProductivityRulesModule,

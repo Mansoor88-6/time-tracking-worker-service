@@ -1,7 +1,16 @@
-import { Controller, Get, Query, UseGuards, Logger } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Post,
+  Query,
+  UseGuards,
+  Logger,
+} from '@nestjs/common';
 import { StatsService } from './stats.service';
 import { StatsQueryDto } from './dto/stats-query.dto';
 import { InternalKeyGuard } from './guards/internal-key.guard';
+import { ManualOfflineEventDto } from './dto/manual-offline-event.dto';
 
 /**
  * Stats Controller
@@ -112,6 +121,20 @@ export class StatsController {
       );
       throw error;
     }
+  }
+
+  @Post('manual-offline-event')
+  async insertManualOfflineEvent(@Body() body: ManualOfflineEventDto) {
+    await this.statsService.insertManualOfflineEvent({
+      tenantId: body.tenantId,
+      userId: body.userId,
+      requestId: body.requestId,
+      startMs: body.startMs,
+      endMs: body.endMs,
+      category: body.category,
+      description: body.description,
+    });
+    return { ok: true };
   }
 
   @Get('timeline')
