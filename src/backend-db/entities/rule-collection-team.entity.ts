@@ -9,7 +9,7 @@ import {
 @Entity('rule_collection_team')
 @Index(['collectionId'])
 @Index(['teamId'])
-@Unique(['collectionId', 'teamId'])
+@Unique(['teamId'])
 export class RuleCollectionTeam {
   @PrimaryGeneratedColumn()
   id: number;
