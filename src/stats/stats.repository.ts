@@ -5,6 +5,22 @@ import { RawEventEntity } from '../timescale/entities/raw-event.entity';
 import type { DashboardStats } from './interfaces/dashboard-stats.interface';
 import type { RawAppUsage, UrlBreakdown } from './interfaces/app-usage.interface';
 import { AppCategorizationService } from './app-categorization.service';
+import {
+  complementInRange,
+  mergeMsIntervals,
+  type MsInterval,
+} from './timeline-interval.utils';
+
+export interface TimelineIntervalIsoDto {
+  start: string;
+  end: string;
+}
+
+export interface TimelineSlotActivityDto {
+  label: string;
+  durationMs: number;
+  category: 'productive' | 'neutral' | 'unproductive';
+}
 
 export interface TimelineSlotDto {
   startMinuteFromMidnight: number;
@@ -18,6 +34,20 @@ export interface TimelineSlotDto {
   /** Idle portion of the slot in milliseconds. */
   idleMs: number;
   online: boolean;
+  /** Per-app/site active time in this slot (for tooltips). */
+  activities?: TimelineSlotActivityDto[];
+  /**
+   * Wall-clock intervals of productive+neutral+unproductive (blocked in offline modal).
+   * Always present (possibly empty) on new workers so clients can detect interval-aware payloads.
+   */
+  activeIntervalsUtc: TimelineIntervalIsoDto[];
+  /** Wall-clock idle/away intervals within the slot. */
+  idleIntervalsUtc: TimelineIntervalIsoDto[];
+  /**
+   * Uncovered wall time in the slot (no tracked active or idle).
+   * Empty array when offline or fully covered.
+   */
+  remainderIntervalsUtc: TimelineIntervalIsoDto[];
 }
 
 /**
@@ -43,6 +73,52 @@ function minutesFromMidnightInTimezone(
   if (hour === 24) hour = 0;
   return hour * 60 + minute;
 }
+
+/** Display label for timeline tooltip rows (browser domains, titles, or app name). */
+function timelineActivityDisplayLabel(e: RawEventEntity): string {
+  const webSource = e.source === 'browser';
+  const app = e.application?.trim();
+  const url = e.url?.trim();
+  const title = e.title?.trim();
+  if (webSource) {
+    if (url) {
+      try {
+        if (url.startsWith('http://') || url.startsWith('https://')) {
+          return new URL(url).hostname.replace(/^www\./, '');
+        }
+      } catch {
+        /* ignore invalid URL */
+      }
+      const host = url.split('/')[0]?.replace(/^www\./, '');
+      if (host) return host;
+    }
+    if (title) return title.length > 50 ? `${title.slice(0, 47)}...` : title;
+    return app || 'Browser';
+  }
+  return app || 'Unknown';
+}
+
+function appendSlotInterval(
+  map: Map<number, MsInterval[]>,
+  slotIndex: number,
+  startMs: number,
+  endMs: number,
+): void {
+  if (endMs - startMs < 1) return;
+  const arr = map.get(slotIndex) ?? [];
+  arr.push({ startMs, endMs });
+  map.set(slotIndex, arr);
+}
+
+function msIntervalsToIso(
+  intervals: MsInterval[],
+): TimelineIntervalIsoDto[] {
+  return intervals.map(({ startMs, endMs }) => ({
+    start: new Date(startMs).toISOString(),
+    end: new Date(endMs).toISOString(),
+  }));
+}
+
 /**
  * Stats Repository
  *
@@ -743,6 +819,16 @@ export class StatsRepository {
       };
       const slotMap = new Map<number, SlotAccum>();
 
+      type SlotActivityCategory = 'productive' | 'neutral' | 'unproductive';
+      type SlotActivityRow = {
+        label: string;
+        durationMs: number;
+        category: SlotActivityCategory;
+      };
+      const slotActivitiesMap = new Map<number, Map<string, SlotActivityRow>>();
+      const slotActiveParts = new Map<number, MsInterval[]>();
+      const slotIdleParts = new Map<number, MsInterval[]>();
+
       for (const e of events) {
         const durationMs = toNumber(e.durationMs);
         if (durationMs <= 0) continue;
@@ -817,7 +903,14 @@ export class StatsRepository {
               e.url ?? undefined,
             );
 
-            switch (category) {
+            const catEnum: SlotActivityCategory =
+              category === 'productive'
+                ? 'productive'
+                : category === 'unproductive'
+                  ? 'unproductive'
+                  : 'neutral';
+
+            switch (catEnum) {
               case 'productive':
                 accum.productiveMs += activePortionMs;
                 break;
@@ -829,6 +922,24 @@ export class StatsRepository {
                 accum.neutralMs += activePortionMs;
                 break;
             }
+
+            const label = timelineActivityDisplayLabel(e);
+            const mergeKey = `${label.toLowerCase()}|${catEnum}`;
+            let actSub = slotActivitiesMap.get(slotIndex);
+            if (!actSub) {
+              actSub = new Map<string, SlotActivityRow>();
+              slotActivitiesMap.set(slotIndex, actSub);
+            }
+            const prevAct = actSub.get(mergeKey);
+            if (prevAct) {
+              prevAct.durationMs += activePortionMs;
+            } else {
+              actSub.set(mergeKey, {
+                label,
+                durationMs: activePortionMs,
+                category: catEnum,
+              });
+            }
           }
 
           if (
@@ -836,6 +947,27 @@ export class StatsRepository {
             idlePortionMs > 0
           ) {
             accum.idleMs += idlePortionMs;
+          }
+
+          /**
+           * Wall-clock split within this overlap (active first, then idle), aligned with bar semantics.
+           * activeWall only when status is active; idleWall when active/idle/away and idle portion exists.
+           */
+          const activeWall = e.status === 'active' ? activePortionMs : 0;
+          const idleWall =
+            (e.status === 'active' || e.status === 'idle' || e.status === 'away') &&
+            idlePortionMs > 0
+              ? idlePortionMs
+              : 0;
+          const t0 = segmentStart;
+          const t1 = t0 + activeWall;
+          const t2 = t1 + idleWall;
+
+          if (activeWall > 1 && e.status === 'active') {
+            appendSlotInterval(slotActiveParts, slotIndex, t0, t1);
+          }
+          if (idleWall > 1) {
+            appendSlotInterval(slotIdleParts, slotIndex, t1, t2);
           }
 
           slotMap.set(slotIndex, accum);
@@ -882,6 +1014,30 @@ export class StatsRepository {
         const idleMs = accum.idleMs;
         const idlePct = Math.min(1, slotMs > 0 ? idleMs / slotMs : 0);
 
+        const actMap = slotActivitiesMap.get(i);
+        const activities =
+          actMap && actMap.size > 0
+            ? Array.from(actMap.values())
+                .sort((a, b) => b.durationMs - a.durationMs)
+                .slice(0, 25)
+            : undefined;
+
+        const mergedActive = mergeMsIntervals(slotActiveParts.get(i) ?? []);
+        const mergedIdle = mergeMsIntervals(slotIdleParts.get(i) ?? []);
+        const slotEndMs = slotStartMs + slotMs;
+        const remainderIntervalsUtc =
+          totalTracked > 0
+            ? msIntervalsToIso(
+                complementInRange(slotStartMs, slotEndMs, [
+                  ...mergedActive,
+                  ...mergedIdle,
+                ]),
+              )
+            : [];
+
+        const activeIntervalsUtc = msIntervalsToIso(mergedActive);
+        const idleIntervalsUtc = msIntervalsToIso(mergedIdle);
+
         slots.push({
           startMinuteFromMidnight,
           slotStartUtc: new Date(slotStartMs).toISOString(),
@@ -891,6 +1047,10 @@ export class StatsRepository {
           idlePct,
           idleMs,
           online: totalTracked > 0,
+          ...(activities && activities.length > 0 ? { activities } : {}),
+          activeIntervalsUtc,
+          idleIntervalsUtc,
+          remainderIntervalsUtc,
         });
       }
 
