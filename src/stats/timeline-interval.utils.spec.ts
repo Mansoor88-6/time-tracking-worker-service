@@ -1,4 +1,8 @@
-import { complementInRange, mergeMsIntervals } from './timeline-interval.utils';
+import {
+  complementInRange,
+  mergeMsIntervals,
+  subtractMsIntervals,
+} from './timeline-interval.utils';
 
 describe('mergeMsIntervals', () => {
   it('merges overlapping and adjacent intervals', () => {
@@ -31,6 +35,37 @@ describe('complementInRange', () => {
     expect(complementInRange(0, slotMs, covered)).toEqual([
       { startMs: 60_000, endMs: 120_000 },
       { startMs: 180_000, endMs: 300_000 },
+    ]);
+  });
+});
+
+describe('subtractMsIntervals', () => {
+  it('returns base unchanged when toRemove is empty', () => {
+    expect(
+      subtractMsIntervals(
+        [
+          { startMs: 0, endMs: 100 },
+          { startMs: 200, endMs: 250 },
+        ],
+        [],
+      ),
+    ).toEqual([
+      { startMs: 0, endMs: 100 },
+      { startMs: 200, endMs: 250 },
+    ]);
+  });
+
+  it('fully removes an idle interval covered by a synthetic offline-approval', () => {
+    const idle = [{ startMs: 60_000, endMs: 137_000 }]; // 1m17s idle
+    const active = [{ startMs: 60_000, endMs: 137_000 }]; // same range, approved
+    expect(subtractMsIntervals(idle, active)).toEqual([]);
+  });
+
+  it('keeps uncovered parts of idle when approval partially overlaps', () => {
+    const idle = [{ startMs: 60_000, endMs: 180_000 }]; // 2m idle
+    const active = [{ startMs: 60_000, endMs: 137_000 }]; // first 1m17s approved
+    expect(subtractMsIntervals(idle, active)).toEqual([
+      { startMs: 137_000, endMs: 180_000 },
     ]);
   });
 });

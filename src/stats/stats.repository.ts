@@ -8,6 +8,7 @@ import { AppCategorizationService } from './app-categorization.service';
 import {
   complementInRange,
   mergeMsIntervals,
+  subtractMsIntervals,
   type MsInterval,
 } from './timeline-interval.utils';
 
@@ -1011,7 +1012,24 @@ export class StatsRepository {
           timeZone,
         );
 
-        const idleMs = accum.idleMs;
+        const mergedActive = mergeMsIntervals(slotActiveParts.get(i) ?? []);
+        const rawMergedIdle = mergeMsIntervals(slotIdleParts.get(i) ?? []);
+        /**
+         * Subtract the active wall clock from the idle wall clock. When an admin
+         * approves an offline-time request we insert a synthetic active event
+         * (`__offline_approval__:*`) sharing its wall-clock with the original
+         * idle event. Without this subtraction both would contribute to the
+         * slot (active for the new approval, idle for the old event) and the
+         * frontend's `getSlotFractions` would normalize the over-count into a
+         * phantom idle stripe on the bar even though the slot is fully covered.
+         */
+        const mergedIdle = subtractMsIntervals(rawMergedIdle, mergedActive);
+        const netIdleMs = mergedIdle.reduce(
+          (acc, iv) => acc + (iv.endMs - iv.startMs),
+          0,
+        );
+
+        const idleMs = netIdleMs;
         const idlePct = Math.min(1, slotMs > 0 ? idleMs / slotMs : 0);
 
         const actMap = slotActivitiesMap.get(i);
@@ -1022,8 +1040,6 @@ export class StatsRepository {
                 .slice(0, 25)
             : undefined;
 
-        const mergedActive = mergeMsIntervals(slotActiveParts.get(i) ?? []);
-        const mergedIdle = mergeMsIntervals(slotIdleParts.get(i) ?? []);
         const slotEndMs = slotStartMs + slotMs;
         const remainderIntervalsUtc =
           totalTracked > 0
