@@ -2,6 +2,7 @@ import { Controller, Logger } from '@nestjs/common';
 import { EventPattern, Payload, Ctx, KafkaContext } from '@nestjs/microservices';
 import { ConfigService } from '@nestjs/config';
 import { RawEventsRepository } from '../timescale/raw-events.repository';
+import { RawEventSanitizerService } from './raw-event-sanitizer.service';
 import type { RawEventMessage } from './interfaces/raw-event-message.interface';
 
 /**
@@ -23,6 +24,7 @@ export class EventsConsumerService {
 
   constructor(
     private readonly rawEventsRepository: RawEventsRepository,
+    private readonly rawEventSanitizer: RawEventSanitizerService,
     private readonly configService: ConfigService,
   ) {
     this.topicName =
@@ -70,12 +72,14 @@ export class EventsConsumerService {
         return;
       }
 
+      const sanitized = this.rawEventSanitizer.sanitize(data.events);
+
       // Persist events to TimescaleDB
       const savedCount = await this.rawEventsRepository.saveBatch(
         data.tenantId,
         data.userId,
         data.deviceId,
-        data.events,
+        sanitized,
       );
 
       const duration = Date.now() - startTime;

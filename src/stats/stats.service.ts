@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { StatsRepository } from './stats.repository';
+import { StatsRepository, type DailyDashboardStatsRow } from './stats.repository';
 import { RawEventsRepository } from '../timescale/raw-events.repository';
 import {
   EventStatus,
@@ -34,6 +34,16 @@ export class StatsService {
   private readonly appUsageCache = new Map<
     string,
     { data: AppUsageStats; expires: number }
+  >();
+
+  private readonly monthCalCache = new Map<
+    string,
+    { data: { days: DailyDashboardStatsRow[] }; expires: number }
+  >();
+
+  private readonly presenceCache = new Map<
+    string,
+    { data: Record<string, string>; expires: number }
   >();
 
   constructor(
@@ -186,6 +196,113 @@ export class StatsService {
     this.cleanupCache();
 
     return stats;
+  }
+
+  /**
+   * Per-day dashboard stats for a month (or any inclusive YYYY-MM-DD range, max 62 days).
+   * One Timescale query; buckets by local date in `timezone`.
+   */
+  async getMonthlyCalendarStats(
+    tenantId: number,
+    userId: number,
+    startDate: string,
+    endDate: string,
+    timezone?: string,
+  ): Promise<{ days: DailyDashboardStatsRow[] }> {
+    const orderedDays = this.enumerateInclusiveDateStrings(startDate, endDate);
+    if (orderedDays.length > 62) {
+      throw new BadRequestException('Date range too large (max 62 days)');
+    }
+
+    const cacheKey = `${tenantId}:${userId}:${startDate}:${endDate}:${timezone || 'UTC'}:month-cal`;
+    const cached = this.monthCalCache.get(cacheKey);
+    if (cached && cached.expires > Date.now()) {
+      this.logger.log(
+        `📦 Month calendar cache hit (expires in ${Math.round((cached.expires - Date.now()) / 1000)}s)`,
+      );
+      return cached.data;
+    }
+
+    const { startTime, endTime } = this.getDateRangeBoundaries(
+      startDate,
+      endDate,
+      timezone,
+    );
+
+    this.logger.log(
+      `🗓️ Month calendar: ${orderedDays.length} day(s), UTC ${startTime.toISOString()} – ${endTime.toISOString()}`,
+    );
+
+    const days = await this.statsRepository.getDashboardStatsPerDay(
+      tenantId,
+      userId,
+      startTime,
+      endTime,
+      orderedDays,
+      timezone,
+    );
+
+    const payload = { days };
+    this.monthCalCache.set(cacheKey, {
+      data: payload,
+      expires: Date.now() + this.cacheTtlMs,
+    });
+    this.cleanupMonthCalCache();
+
+    return payload;
+  }
+
+  /**
+   * Users with at least one raw event in [now - windowSec, now].
+   * Cached briefly to protect Timescale when many dashboards poll.
+   */
+  async getColleaguesPresence(
+    tenantId: number,
+    windowSec: number = 120,
+  ): Promise<{ presence: Record<string, string>; windowSec: number }> {
+    const w = Math.min(600, Math.max(30, windowSec));
+    const cacheKey = `${tenantId}:${w}:presence`;
+    const hit = this.presenceCache.get(cacheKey);
+    if (hit && hit.expires > Date.now()) {
+      return { presence: hit.data, windowSec: w };
+    }
+
+    const since = new Date(Date.now() - w * 1000);
+    const map = await this.statsRepository.getLastActivityPerUserInWindow(
+      tenantId,
+      since,
+    );
+    const presence: Record<string, string> = {};
+    for (const [uid, t] of map) {
+      presence[String(uid)] = t.toISOString();
+    }
+
+    this.presenceCache.set(cacheKey, {
+      data: presence,
+      expires: Date.now() + 12_000,
+    });
+    this.cleanupPresenceCache();
+
+    return { presence, windowSec: w };
+  }
+
+  private enumerateInclusiveDateStrings(start: string, end: string): string[] {
+    const [ys, ms, ds] = start.split('-').map(Number);
+    const [ye, me, de] = end.split('-').map(Number);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const out: string[] = [];
+    let y = ys;
+    let m = ms;
+    let d = ds;
+    for (;;) {
+      out.push(`${y}-${pad(m)}-${pad(d)}`);
+      if (y === ye && m === me && d === de) break;
+      const next = new Date(Date.UTC(y, m - 1, d + 1));
+      y = next.getUTCFullYear();
+      m = next.getUTCMonth() + 1;
+      d = next.getUTCDate();
+    }
+    return out;
   }
 
   /**
@@ -599,6 +716,34 @@ export class StatsService {
     }
     if (cleaned > 0) {
       this.logger.debug(`Cleaned up ${cleaned} expired app usage cache entries`);
+    }
+  }
+
+  private cleanupMonthCalCache(): void {
+    const now = Date.now();
+    let cleaned = 0;
+    for (const [key, value] of this.monthCalCache.entries()) {
+      if (value.expires <= now) {
+        this.monthCalCache.delete(key);
+        cleaned++;
+      }
+    }
+    if (cleaned > 0) {
+      this.logger.debug(`Cleaned up ${cleaned} expired month calendar cache entries`);
+    }
+  }
+
+  private cleanupPresenceCache(): void {
+    const now = Date.now();
+    let cleaned = 0;
+    for (const [key, value] of this.presenceCache.entries()) {
+      if (value.expires <= now) {
+        this.presenceCache.delete(key);
+        cleaned++;
+      }
+    }
+    if (cleaned > 0) {
+      this.logger.debug(`Cleaned up ${cleaned} expired presence cache entries`);
     }
   }
 }

@@ -14,6 +14,8 @@ export default () => ({
   },
   worker: {
     internalKey: process.env.WORKER_INTERNAL_KEY || 'change-me-in-production',
+    /** Extra comma-separated app names (case-insensitive) merged with loginwindow + LockApp */
+    systemIdleAppDenylist: process.env.SYSTEM_IDLE_APP_DENYLIST ?? '',
   },
   backendDb: {
     host: process.env.BACKEND_DB_HOST || process.env.DB_HOST || 'localhost',

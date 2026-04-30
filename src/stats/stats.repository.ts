@@ -120,6 +120,27 @@ function msIntervalsToIso(
   }));
 }
 
+/** YYYY-MM-DD for the instant in the given IANA zone (or UTC calendar day if tz omitted). */
+export function instantToLocalDateKey(
+  instant: Date,
+  timeZone?: string,
+): string {
+  if (!timeZone) {
+    const y = instant.getUTCFullYear();
+    const m = instant.getUTCMonth() + 1;
+    const d = instant.getUTCDate();
+    return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  }
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(instant);
+}
+
+export type DailyDashboardStatsRow = { date: string } & DashboardStats;
+
 /**
  * Stats Repository
  *
@@ -135,6 +156,121 @@ export class StatsRepository {
     private readonly rawEventRepository: Repository<RawEventEntity>,
     private readonly appCategorizationService: AppCategorizationService,
   ) {}
+
+  /**
+   * Build dashboard stats from raw events (single local day bucket or any range).
+   */
+  private buildDashboardStatsFromEvents(
+    events: RawEventEntity[],
+    activityWindowSec: number = 600,
+  ): DashboardStats {
+    if (events.length === 0) {
+      return this.getEmptyStats();
+    }
+
+    const nonOfflineEvents = events.filter((e) => e.status !== 'offline');
+    const arrivalTime =
+      nonOfflineEvents.length > 0 ? nonOfflineEvents[0].time : null;
+    const lastNonOfflineEvent =
+      nonOfflineEvents.length > 0
+        ? nonOfflineEvents[nonOfflineEvents.length - 1]
+        : null;
+
+    const now = new Date();
+    const lastEventTime = lastNonOfflineEvent
+      ? new Date(lastNonOfflineEvent.time)
+      : null;
+
+    const isOnline: boolean =
+      !!(
+        lastEventTime &&
+        lastNonOfflineEvent &&
+        lastNonOfflineEvent.status !== 'offline' &&
+        now.getTime() - lastEventTime.getTime() < activityWindowSec * 1000
+      );
+
+    const leftTime = isOnline ? null : lastEventTime;
+
+    const toNumber = (
+      value: bigint | number | string | null | undefined,
+    ): number => {
+      if (value === null || value === undefined) return 0;
+      if (typeof value === 'number') return value;
+      if (typeof value === 'bigint') return Number(value);
+      if (typeof value === 'string') {
+        const parsed = parseInt(value, 10);
+        return isNaN(parsed) ? 0 : parsed;
+      }
+      return 0;
+    };
+
+    const getActiveDuration = (e: RawEventEntity): number => {
+      if (e.activeDurationMs !== null && e.activeDurationMs !== undefined) {
+        return toNumber(e.activeDurationMs);
+      }
+      return toNumber(e.durationMs);
+    };
+
+    const productiveTimeMs = events
+      .filter((e) => e.status === 'active')
+      .reduce((sum, e) => sum + getActiveDuration(e), 0);
+
+    const deskTimeMs = events
+      .filter(
+        (e) =>
+          e.status === 'active' ||
+          e.status === 'idle' ||
+          e.status === 'away',
+      )
+      .reduce((sum, e) => sum + toNumber(e.durationMs), 0);
+
+    let timeAtWorkMs = 0;
+    if (arrivalTime) {
+      let endTime: Date;
+      if (isOnline) {
+        endTime = now;
+      } else if (leftTime && lastNonOfflineEvent) {
+        const lastEventEndTime =
+          lastNonOfflineEvent.time.getTime() +
+          toNumber(lastNonOfflineEvent.durationMs);
+        endTime = new Date(lastEventEndTime);
+      } else {
+        endTime = now;
+      }
+      timeAtWorkMs = Math.max(0, endTime.getTime() - arrivalTime.getTime());
+    }
+
+    const projectsTimeMs = events
+      .filter(
+        (e) =>
+          e.status === 'active' &&
+          e.projectId !== null &&
+          e.projectId !== undefined &&
+          (e.activeDurationMs !== null && e.activeDurationMs !== undefined
+            ? true
+            : !!e.durationMs),
+      )
+      .reduce((sum, e) => sum + getActiveDuration(e), 0);
+
+    const productivityScorePct =
+      deskTimeMs > 0 ? Math.round((productiveTimeMs / deskTimeMs) * 100) : 0;
+    const effectivenessPct =
+      timeAtWorkMs > 0
+        ? Math.round((productiveTimeMs / timeAtWorkMs) * 100)
+        : 0;
+
+    return {
+      arrivalTime,
+      leftTime,
+      isOnline,
+      productiveTimeMs,
+      deskTimeMs,
+      timeAtWorkMs,
+      productivityScorePct: Math.min(100, Math.max(0, productivityScorePct)),
+      effectivenessPct: Math.min(100, Math.max(0, effectivenessPct)),
+      projectsTimeMs,
+    };
+  }
 
   /**
    * Get dashboard stats for a user within a time range
@@ -157,7 +293,6 @@ export class StatsRepository {
 
 
     try {
-      // Get all events in the time range
       const events = await this.rawEventRepository.find({
         where: {
           tenantId,
@@ -179,138 +314,21 @@ export class StatsRepository {
         this.logger.debug(
           `Event times: ${events.map((e) => e.time.toISOString()).join(', ')}`,
         );
-      }
-
-      // If no events, return empty stats
-      if (events.length === 0) {
+      } else {
         this.logger.log('No events found, returning empty stats');
-        return this.getEmptyStats();
       }
 
-      // Filter out offline events for arrival/left time calculation
-      const nonOfflineEvents = events.filter((e) => e.status !== 'offline');
-
-      // Calculate arrival time (first non-offline event)
-      const arrivalTime =
-        nonOfflineEvents.length > 0 ? nonOfflineEvents[0].time : null;
-
-      // Calculate left time and online status
-      const lastNonOfflineEvent =
-        nonOfflineEvents.length > 0
-          ? nonOfflineEvents[nonOfflineEvents.length - 1]
-          : null;
-
-      const now = new Date();
-      const lastEventTime = lastNonOfflineEvent
-        ? new Date(lastNonOfflineEvent.time)
-        : null;
-
-      // User is online if last non-offline event is within activity window
-      const isOnline: boolean =
-        !!(
-          lastEventTime &&
-          lastNonOfflineEvent &&
-          lastNonOfflineEvent.status !== 'offline' &&
-          now.getTime() - lastEventTime.getTime() < activityWindowSec * 1000
-        );
-
-      const leftTime = isOnline ? null : lastEventTime;
-
-      // Helper function to safely convert numeric DB values (bigint / number / string) to number
-      const toNumber = (value: bigint | number | string | null | undefined): number => {
-        if (value === null || value === undefined) return 0;
-        if (typeof value === 'number') return value;
-        if (typeof value === 'bigint') return Number(value);
-        if (typeof value === 'string') {
-          const parsed = parseInt(value, 10);
-          return isNaN(parsed) ? 0 : parsed;
-        }
-        return 0;
-      };
-
-      // Helper to get active duration with backward compatibility:
-      // prefer activeDurationMs, fall back to durationMs for legacy events.
-      const getActiveDuration = (e: RawEventEntity): number => {
-        if (e.activeDurationMs !== null && e.activeDurationMs !== undefined) {
-          return toNumber(e.activeDurationMs);
-        }
-        return toNumber(e.durationMs);
-      };
-
-      // Aggregate productive time from active duration (status='active')
-      const productiveTimeMs = events
-        .filter((e) => e.status === 'active')
-        .reduce((sum, e) => sum + getActiveDuration(e), 0);
-
-      // Aggregate desk time (status IN ('active','idle','away')) based on total tracked duration
-      const deskTimeMs = events
-        .filter(
-          (e) =>
-            (e.status === 'active' ||
-              e.status === 'idle' ||
-              e.status === 'away'),
-        )
-        .reduce((sum, e) => sum + toNumber(e.durationMs), 0);
-
-      // Calculate time at work (total time from arrival to departure/current time)
-      // This should be the wall-clock time from when user arrived to when they left (or now if online)
-      let timeAtWorkMs = 0;
-      if (arrivalTime) {
-        let endTime: Date;
-        if (isOnline) {
-          // If online, use current time
-          endTime = now;
-        } else if (leftTime && lastNonOfflineEvent) {
-          // If offline, use the end time of the last event (time + duration)
-          const lastEventEndTime =
-            lastNonOfflineEvent.time.getTime() +
-            toNumber(lastNonOfflineEvent.durationMs);
-          endTime = new Date(lastEventEndTime);
-        } else {
-          // Fallback to current time
-          endTime = now;
-        }
-        timeAtWorkMs = Math.max(0, endTime.getTime() - arrivalTime.getTime());
-      }
-
-      // Calculate projects time (status='active' AND project_id IS NOT NULL) from active duration
-      const projectsTimeMs = events
-        .filter(
-          (e) =>
-            e.status === 'active' &&
-            e.projectId !== null &&
-            e.projectId !== undefined &&
-            (e.activeDurationMs !== null &&
-              e.activeDurationMs !== undefined
-              ? true
-              : !!e.durationMs),
-        )
-        .reduce((sum, e) => sum + getActiveDuration(e), 0);
-
-      // Calculate percentages
-      const productivityScorePct =
-        deskTimeMs > 0 ? Math.round((productiveTimeMs / deskTimeMs) * 100) : 0;
-      const effectivenessPct =
-        timeAtWorkMs > 0
-          ? Math.round((productiveTimeMs / timeAtWorkMs) * 100)
-          : 0;
+      const stats = this.buildDashboardStatsFromEvents(
+        events,
+        activityWindowSec,
+      );
 
       const queryDuration = Date.now() - queryStart;
       this.logger.log(
         `✅ Stats query completed in ${queryDuration}ms for tenant ${tenantId}, user ${userId}`,
       );
 
-      return {
-        arrivalTime,
-        leftTime,
-        isOnline,
-        productiveTimeMs,
-        deskTimeMs,
-        timeAtWorkMs,
-        productivityScorePct: Math.min(100, Math.max(0, productivityScorePct)),
-        effectivenessPct: Math.min(100, Math.max(0, effectivenessPct)),
-        projectsTimeMs,
-      };
+      return stats;
     } catch (error) {
       const queryDuration = Date.now() - queryStart;
       const errorMessage =
@@ -321,6 +339,94 @@ export class StatsRepository {
       );
       throw error;
     }
+  }
+
+  /**
+   * Per-local-day stats for a calendar range (one query, bucket by tz).
+   */
+  async getDashboardStatsPerDay(
+    tenantId: number,
+    userId: number,
+    rangeStartUtc: Date,
+    rangeEndUtc: Date,
+    orderedDayKeys: string[],
+    timeZone?: string,
+    activityWindowSec: number = 600,
+  ): Promise<DailyDashboardStatsRow[]> {
+    const queryStart = Date.now();
+    try {
+      const events = await this.rawEventRepository.find({
+        where: {
+          tenantId,
+          userId,
+          time: Between(rangeStartUtc, rangeEndUtc),
+        },
+        order: { time: 'ASC' },
+      });
+
+      this.logger.log(
+        `Month overview: ${events.length} events, UTC ${rangeStartUtc.toISOString()}–${rangeEndUtc.toISOString()}, ${orderedDayKeys.length} day(s)`,
+      );
+
+      const byDay = new Map<string, RawEventEntity[]>();
+      for (const e of events) {
+        const key = instantToLocalDateKey(e.time, timeZone);
+        const arr = byDay.get(key) ?? [];
+        arr.push(e);
+        byDay.set(key, arr);
+      }
+
+      const rows: DailyDashboardStatsRow[] = orderedDayKeys.map((date) => ({
+        date,
+        ...this.buildDashboardStatsFromEvents(
+          byDay.get(date) ?? [],
+          activityWindowSec,
+        ),
+      }));
+
+      this.logger.log(
+        `✅ Month overview query completed in ${Date.now() - queryStart}ms`,
+      );
+      return rows;
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `❌ Month overview stats failed: ${errorMessage}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Latest event timestamp per user in tenant within a recent window (for colleague presence).
+   */
+  async getLastActivityPerUserInWindow(
+    tenantId: number,
+    sinceUtc: Date,
+  ): Promise<Map<number, Date>> {
+    const rows = await this.rawEventRepository
+      .createQueryBuilder('e')
+      .select('e.userId', 'userId')
+      .addSelect('MAX(e.time)', 'lastTime')
+      .where('e.tenantId = :tenantId', { tenantId })
+      .andWhere('e.time >= :since', { since: sinceUtc })
+      .groupBy('e.userId')
+      .getRawMany<{ userId: string; lastTime: Date | string }>();
+
+    const map = new Map<number, Date>();
+    for (const row of rows) {
+      const uid = Number(row.userId);
+      const t =
+        row.lastTime instanceof Date
+          ? row.lastTime
+          : new Date(row.lastTime);
+      if (!Number.isNaN(uid) && !Number.isNaN(t.getTime())) {
+        map.set(uid, t);
+      }
+    }
+    return map;
   }
 
   /**

@@ -9,6 +9,8 @@ import {
 } from '@nestjs/common';
 import { StatsService } from './stats.service';
 import { StatsQueryDto } from './dto/stats-query.dto';
+import { MonthCalendarQueryDto } from './dto/month-calendar-query.dto';
+import { ColleaguesPresenceQueryDto } from './dto/colleagues-presence-query.dto';
 import { InternalKeyGuard } from './guards/internal-key.guard';
 import { ManualOfflineEventDto } from './dto/manual-offline-event.dto';
 
@@ -24,6 +26,44 @@ export class StatsController {
   private readonly logger = new Logger(StatsController.name);
 
   constructor(private readonly statsService: StatsService) {}
+
+  @Get('colleagues-presence')
+  async getColleaguesPresence(@Query() query: ColleaguesPresenceQueryDto) {
+    const windowSec = query.windowSec ?? 120;
+    return this.statsService.getColleaguesPresence(
+      query.tenantId,
+      windowSec,
+    );
+  }
+
+  @Get('month-calendar')
+  async getMonthCalendar(@Query() query: MonthCalendarQueryDto) {
+    const startTime = Date.now();
+    this.logger.log(
+      `🗓️ Month calendar: tenant=${query.tenantId}, user=${query.userId}, ${query.startDate}–${query.endDate}, tz=${query.tz || 'UTC'}`,
+    );
+    try {
+      const data = await this.statsService.getMonthlyCalendarStats(
+        query.tenantId,
+        query.userId,
+        query.startDate,
+        query.endDate,
+        query.tz,
+      );
+      this.logger.log(
+        `✅ Month calendar in ${Date.now() - startTime}ms (${data.days.length} days)`,
+      );
+      return data;
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `❌ Month calendar failed: ${errorMessage}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      throw error;
+    }
+  }
 
   @Get('summary')
   async getSummary(@Query() query: StatsQueryDto) {
