@@ -600,10 +600,19 @@ export class StatsService {
       },
     };
 
-    // Limit to top 20 apps per category for performance
+    // Limit response payloads for performance. Totals are calculated before
+    // these display-only slices so long ranges stay numerically accurate.
     const maxAppsPerCategory = 20;
+    const maxUrlBreakdownItemsPerApp = 15;
 
     type CategoryBucket = { productiveTimeMs: number; urlBreakdown: UrlBreakdown[] };
+
+    const limitUrlBreakdownForDisplay = (
+      breakdown: UrlBreakdown[] = [],
+    ): UrlBreakdown[] =>
+      [...breakdown]
+        .sort((a, b) => b.productiveTimeMs - a.productiveTimeMs)
+        .slice(0, maxUrlBreakdownItemsPerApp);
 
     for (const app of rawAppUsage) {
       if (app.appType === 'desktop') {
@@ -615,7 +624,11 @@ export class StatsService {
           app.appType,
           undefined,
         );
-        const appUsage: AppUsage = { ...app, category };
+        const appUsage: AppUsage = {
+          ...app,
+          category,
+          urlBreakdown: limitUrlBreakdownForDisplay(app.urlBreakdown),
+        };
         switch (category) {
           case 'productive':
             categorized.productive.push(appUsage);
@@ -672,7 +685,7 @@ export class StatsService {
           appType: app.appType,
           productiveTimeMs: bucket.productiveTimeMs,
           category,
-          urlBreakdown: bucket.urlBreakdown,
+          urlBreakdown: limitUrlBreakdownForDisplay(bucket.urlBreakdown),
         });
         categorized.totals[category] += bucket.productiveTimeMs;
       }

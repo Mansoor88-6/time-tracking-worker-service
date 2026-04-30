@@ -605,13 +605,16 @@ export class StatsRepository {
         }
       }
 
-      // Convert to RawAppUsage format with sorted breakdown
+      // Convert to RawAppUsage format with sorted breakdown.
+      // Do not slice here: StatsService categorizes URL breakdown entries and
+      // uses them for totals. Trimming before categorization makes week/month
+      // dashboard totals lower than the sum of daily totals.
       const appUsage: RawAppUsage[] = Array.from(appUsageMap.values()).map(
         (entry) => {
-          // Sort breakdown by time descending and limit to top 15
+          // Sort breakdown by time descending. Response-size limiting happens
+          // after category totals are calculated.
           const sortedBreakdown = Array.from(entry.urlBreakdownMap.values())
-            .sort((a, b) => b.productiveTimeMs - a.productiveTimeMs)
-            .slice(0, 15);
+            .sort((a, b) => b.productiveTimeMs - a.productiveTimeMs);
 
           return {
             appName: entry.appName,
