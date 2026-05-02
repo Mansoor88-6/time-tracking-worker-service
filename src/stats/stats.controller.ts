@@ -177,6 +177,25 @@ export class StatsController {
     return { ok: true };
   }
 
+  @Post('delete-tracked-time')
+  async deleteTrackedTime(
+    @Body()
+    body: {
+      tenantId: number;
+      userId: number;
+      startMs: number;
+      endMs: number;
+    },
+  ) {
+    const result = await this.statsService.deleteTrackedTimeRange({
+      tenantId: body.tenantId,
+      userId: body.userId,
+      startMs: body.startMs,
+      endMs: body.endMs,
+    });
+    return { ok: true, ...result };
+  }
+
   @Get('timeline')
   async getTimeline(@Query() query: StatsQueryDto) {
     const startTime = Date.now();

@@ -107,4 +107,172 @@ export class RawEventsRepository {
       where: { tenantId },
     });
   }
+
+  async deleteUserTimeRange(params: {
+    tenantId: number;
+    userId: number;
+    startMs: number;
+    endMs: number;
+  }): Promise<{
+    deletedEvents: number;
+    trimmedEvents: number;
+    splitEvents: number;
+  }> {
+    const { tenantId, userId, startMs, endMs } = params;
+    const startTime = Date.now();
+
+    const toNumber = (value: unknown): number => {
+      if (typeof value === 'number') return value;
+      if (typeof value === 'bigint') return Number(value);
+      if (typeof value === 'string') return Number(value);
+      return 0;
+    };
+
+    const eventStartMs = (event: RawEventEntity): number =>
+      event.startTime !== null && event.startTime !== undefined
+        ? toNumber(event.startTime)
+        : toNumber(event.timestamp);
+
+    const eventEndMs = (event: RawEventEntity): number => {
+      if (event.endTime !== null && event.endTime !== undefined) {
+        return toNumber(event.endTime);
+      }
+      const duration = Math.max(0, toNumber(event.durationMs));
+      return eventStartMs(event) + duration;
+    };
+
+    const applyInterval = (
+      event: RawEventEntity,
+      intervalStartMs: number,
+      intervalEndMs: number,
+      originalDurationMs: number,
+      originalActiveMs: number,
+      originalIdleMs: number,
+    ): void => {
+      const duration = Math.max(0, intervalEndMs - intervalStartMs);
+      const totalLabeled = originalActiveMs + originalIdleMs;
+      const activeRatio =
+        totalLabeled > 0
+          ? originalActiveMs / originalDurationMs
+          : event.status === 'active'
+            ? 1
+            : 0;
+      const idleRatio =
+        totalLabeled > 0
+          ? originalIdleMs / originalDurationMs
+          : event.status === 'idle' || event.status === 'away'
+            ? 1
+            : 0;
+
+      event.time = new Date(intervalStartMs);
+      event.timestamp = intervalStartMs;
+      event.startTime = intervalStartMs;
+      event.endTime = intervalEndMs;
+      event.durationMs = duration;
+      event.activeDurationMs = Math.round(duration * activeRatio);
+      event.idleDurationMs = Math.round(duration * idleRatio);
+    };
+
+    return this.rawEventRepository.manager.transaction(async (manager) => {
+      const events = await manager
+        .createQueryBuilder(RawEventEntity, 'event')
+        .where('event.tenant_id = :tenantId', { tenantId })
+        .andWhere('event.user_id = :userId', { userId })
+        .andWhere(
+          'COALESCE(event.start_time, event.timestamp) < :endMs',
+          { endMs },
+        )
+        .andWhere(
+          '(CASE WHEN event.end_time IS NOT NULL THEN event.end_time ELSE COALESCE(event.start_time, event.timestamp) + COALESCE(event.duration_ms, 0) END) > :startMs',
+          { startMs },
+        )
+        .getMany();
+
+      let deletedEvents = 0;
+      let trimmedEvents = 0;
+      let splitEvents = 0;
+
+      for (const event of events) {
+        const originalStart = eventStartMs(event);
+        const originalEnd = eventEndMs(event);
+        const originalDuration = Math.max(0, originalEnd - originalStart);
+        if (originalDuration <= 0) continue;
+
+        const keepLeft = originalStart < startMs;
+        const keepRight = originalEnd > endMs;
+        const originalActive = toNumber(event.activeDurationMs);
+        const originalIdle = toNumber(event.idleDurationMs);
+
+        if (!keepLeft && !keepRight) {
+          await manager.remove(RawEventEntity, event);
+          deletedEvents += 1;
+          continue;
+        }
+
+        if (keepLeft && keepRight) {
+          const right = manager.create(RawEventEntity, {
+            tenantId: event.tenantId,
+            userId: event.userId,
+            deviceId: event.deviceId,
+            status: event.status,
+            application: event.application,
+            title: event.title,
+            url: event.url,
+            projectId: event.projectId,
+            source: event.source,
+            tabId: event.tabId,
+            windowId: event.windowId,
+            sequence: event.sequence,
+          });
+          applyInterval(
+            right,
+            endMs,
+            originalEnd,
+            originalDuration,
+            originalActive,
+            originalIdle,
+          );
+          applyInterval(
+            event,
+            originalStart,
+            startMs,
+            originalDuration,
+            originalActive,
+            originalIdle,
+          );
+          await manager.save(RawEventEntity, [event, right]);
+          splitEvents += 1;
+          continue;
+        }
+
+        if (keepLeft) {
+          applyInterval(
+            event,
+            originalStart,
+            startMs,
+            originalDuration,
+            originalActive,
+            originalIdle,
+          );
+        } else {
+          applyInterval(
+            event,
+            endMs,
+            originalEnd,
+            originalDuration,
+            originalActive,
+            originalIdle,
+          );
+        }
+        await manager.save(RawEventEntity, event);
+        trimmedEvents += 1;
+      }
+
+      this.logger.log(
+        `Deleted tracked time range for tenant=${tenantId}, user=${userId}, ${new Date(startMs).toISOString()}-${new Date(endMs).toISOString()} in ${Date.now() - startTime}ms: deleted=${deletedEvents}, trimmed=${trimmedEvents}, split=${splitEvents}`,
+      );
+
+      return { deletedEvents, trimmedEvents, splitEvents };
+    });
+  }
 }

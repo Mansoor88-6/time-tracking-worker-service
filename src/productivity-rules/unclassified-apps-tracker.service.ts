@@ -42,7 +42,6 @@ export class UnclassifiedAppsTrackerService {
         tenantId,
         appName: normalizedAppName,
         appType,
-        status: UnclassifiedAppStatus.PENDING,
       };
       if (teamId !== null) {
         where.teamId = teamId;
@@ -112,7 +111,6 @@ export class UnclassifiedAppsTrackerService {
               tenantId: record.tenantId,
               appName: normalizedAppName,
               appType: record.appType,
-              status: UnclassifiedAppStatus.PENDING,
             };
             if (record.teamId !== null) {
               where.teamId = record.teamId;

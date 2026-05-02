@@ -471,6 +471,43 @@ export class StatsService {
     );
   }
 
+  async deleteTrackedTimeRange(params: {
+    tenantId: number;
+    userId: number;
+    startMs: number;
+    endMs: number;
+  }): Promise<{
+    deletedEvents: number;
+    trimmedEvents: number;
+    splitEvents: number;
+  }> {
+    const { tenantId, userId, startMs, endMs } = params;
+    if (endMs <= startMs) {
+      throw new BadRequestException('endMs must be greater than startMs');
+    }
+
+    const maxMs = 24 * 60 * 60 * 1000;
+    if (endMs - startMs > maxMs) {
+      throw new BadRequestException('Delete range cannot exceed 24 hours');
+    }
+
+    const result = await this.rawEventsRepository.deleteUserTimeRange({
+      tenantId,
+      userId,
+      startMs,
+      endMs,
+    });
+
+    const startDate = new Date(startMs).toISOString().slice(0, 10);
+    const endDate = new Date(endMs).toISOString().slice(0, 10);
+    this.clearCache(tenantId, userId, startDate, 'UTC');
+    if (endDate !== startDate) {
+      this.clearCache(tenantId, userId, endDate, 'UTC');
+    }
+
+    return result;
+  }
+
   /**
    * Get app usage statistics for a user for a date or date range in their timezone
    *

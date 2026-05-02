@@ -11,6 +11,7 @@ export enum UnclassifiedAppStatus {
   PENDING = 'pending',
   REVIEWED = 'reviewed',
   CLASSIFIED = 'classified',
+  ARCHIVED = 'archived',
 }
 
 @Entity('unclassified_app')
