@@ -5,8 +5,10 @@
  * All time values are in milliseconds unless otherwise specified.
  */
 export interface DashboardStats {
-  arrivalTime: Date | null; // First non-offline event time
-  leftTime: Date | null; // Last non-offline event time, or null if online
+  /** Earliest wall-clock start among non-offline events (aligns with timeline first bar). */
+  arrivalTime: Date | null;
+  /** Latest wall-clock end among non-offline events, or null if still considered online. */
+  leftTime: Date | null;
   isOnline: boolean; // True if user is currently active (within activity window)
   /**
    * Total time that was actively spent on apps/domains and classified as productive.

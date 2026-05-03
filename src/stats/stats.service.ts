@@ -414,6 +414,38 @@ export class StatsService {
   }
 
   /**
+   * Invalidate all dashboard stats, app usage, and month-calendar cache keys for a user
+   * (any timezone / date-range variant) after raw events change.
+   */
+  private invalidateCachesForUser(tenantId: number, userId: number): void {
+    const prefix = `${tenantId}:${userId}:`;
+    let removed = 0;
+    for (const key of this.cache.keys()) {
+      if (key.startsWith(prefix)) {
+        this.cache.delete(key);
+        removed++;
+      }
+    }
+    for (const key of this.appUsageCache.keys()) {
+      if (key.startsWith(prefix)) {
+        this.appUsageCache.delete(key);
+        removed++;
+      }
+    }
+    for (const key of this.monthCalCache.keys()) {
+      if (key.startsWith(prefix)) {
+        this.monthCalCache.delete(key);
+        removed++;
+      }
+    }
+    if (removed > 0) {
+      this.logger.debug(
+        `Invalidated ${removed} stats cache entr${removed === 1 ? 'y' : 'ies'} for tenant=${tenantId} user=${userId}`,
+      );
+    }
+  }
+
+  /**
    * Insert a synthetic active event after admin approves an offline-time request (Option A).
    * Categorization uses application prefix __offline_approval__:* in AppCategorizationService.
    */
@@ -464,8 +496,7 @@ export class StatsService {
         'Event was not inserted (duplicate or conflict)',
       );
     }
-    const dateStr = new Date(startMs).toISOString().slice(0, 10);
-    this.clearCache(tenantId, userId, dateStr, 'UTC');
+    this.invalidateCachesForUser(tenantId, userId);
     this.logger.log(
       `Manual offline event inserted for tenant=${tenantId} user=${userId} request=${requestId}`,
     );
@@ -498,12 +529,7 @@ export class StatsService {
       endMs,
     });
 
-    const startDate = new Date(startMs).toISOString().slice(0, 10);
-    const endDate = new Date(endMs).toISOString().slice(0, 10);
-    this.clearCache(tenantId, userId, startDate, 'UTC');
-    if (endDate !== startDate) {
-      this.clearCache(tenantId, userId, endDate, 'UTC');
-    }
+    this.invalidateCachesForUser(tenantId, userId);
 
     return result;
   }

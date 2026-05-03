@@ -169,27 +169,6 @@ export class StatsRepository {
     }
 
     const nonOfflineEvents = events.filter((e) => e.status !== 'offline');
-    const arrivalTime =
-      nonOfflineEvents.length > 0 ? nonOfflineEvents[0].time : null;
-    const lastNonOfflineEvent =
-      nonOfflineEvents.length > 0
-        ? nonOfflineEvents[nonOfflineEvents.length - 1]
-        : null;
-
-    const now = new Date();
-    const lastEventTime = lastNonOfflineEvent
-      ? new Date(lastNonOfflineEvent.time)
-      : null;
-
-    const isOnline: boolean =
-      !!(
-        lastEventTime &&
-        lastNonOfflineEvent &&
-        lastNonOfflineEvent.status !== 'offline' &&
-        now.getTime() - lastEventTime.getTime() < activityWindowSec * 1000
-      );
-
-    const leftTime = isOnline ? null : lastEventTime;
 
     const toNumber = (
       value: bigint | number | string | null | undefined,
@@ -203,6 +182,47 @@ export class StatsRepository {
       }
       return 0;
     };
+
+    /** Same wall-clock bounds as timeline slotting (`getTimelineSlots`). */
+    const wallClockStartMs = (e: RawEventEntity): number =>
+      e.startTime !== null && e.startTime !== undefined
+        ? toNumber(e.startTime)
+        : e.time.getTime();
+    const wallClockEndMs = (e: RawEventEntity): number =>
+      e.endTime !== null && e.endTime !== undefined
+        ? toNumber(e.endTime)
+        : wallClockStartMs(e) + toNumber(e.durationMs);
+
+    const now = new Date();
+    const nowMs = now.getTime();
+
+    let firstPresenceStartMs = Infinity;
+    let lastPresenceEndMs = 0;
+    for (const e of nonOfflineEvents) {
+      const s = wallClockStartMs(e);
+      const end = wallClockEndMs(e);
+      if (s < firstPresenceStartMs) firstPresenceStartMs = s;
+      if (end > lastPresenceEndMs) lastPresenceEndMs = end;
+    }
+
+    const arrivalTime =
+      firstPresenceStartMs !== Infinity
+        ? new Date(firstPresenceStartMs)
+        : null;
+
+    /**
+     * "Online" = last tracked presence end is within the activity window of now
+     * (uses end time, not event start — matches synthetic offline-approval segments).
+     */
+    const cappedEndForPresenceMs = Math.min(lastPresenceEndMs, nowMs);
+    const isOnline: boolean =
+      lastPresenceEndMs > 0 &&
+      nowMs - cappedEndForPresenceMs < activityWindowSec * 1000;
+
+    const leftTime =
+      isOnline || lastPresenceEndMs <= 0
+        ? null
+        : new Date(Math.min(lastPresenceEndMs, nowMs));
 
     const getActiveDuration = (e: RawEventEntity): number => {
       if (e.activeDurationMs !== null && e.activeDurationMs !== undefined) {
@@ -229,11 +249,8 @@ export class StatsRepository {
       let endTime: Date;
       if (isOnline) {
         endTime = now;
-      } else if (leftTime && lastNonOfflineEvent) {
-        const lastEventEndTime =
-          lastNonOfflineEvent.time.getTime() +
-          toNumber(lastNonOfflineEvent.durationMs);
-        endTime = new Date(lastEventEndTime);
+      } else if (lastPresenceEndMs > 0) {
+        endTime = new Date(Math.min(lastPresenceEndMs, nowMs));
       } else {
         endTime = now;
       }
@@ -508,213 +525,6 @@ export class StatsRepository {
         return 0;
       };
 
-      // Helper function to check if application is a browser
-      const isBrowser = (
-        application: string | null | undefined,
-      ): boolean => {
-        if (!application) return false;
-        const appLower = application.toLowerCase();
-        const browsers = [
-          'chrome',
-          'google chrome',
-          'chromium',
-          'firefox',
-          'mozilla firefox',
-          'edge',
-          'microsoft edge',
-          'safari',
-          'opera',
-          'brave',
-          'vivaldi',
-          'tor browser',
-        ];
-        return browsers.some((browser) => appLower.includes(browser));
-      };
-
-      // Helper function to extract domain from URL
-      const extractDomain = (url: string | null | undefined): string | null => {
-        if (!url || url.trim() === '') return null;
-        try {
-          // If it's a full URL, extract domain
-          if (url.startsWith('http://') || url.startsWith('https://')) {
-            const urlObj = new URL(url);
-            return urlObj.hostname.replace('www.', '');
-          }
-          // If it's domain/path, extract just domain
-          if (url.includes('/')) {
-            return url.split('/')[0].replace('www.', '');
-          }
-          return url.replace('www.', '');
-        } catch {
-          // If URL parsing fails, return null
-          return null;
-        }
-      };
-
-      // Helper function to extract domain from title (fallback for browser windows)
-      const extractDomainFromTitle = (
-        title: string | null | undefined,
-      ): string | null => {
-        if (!title || title.trim() === '') return null;
-
-        const titleLower = title.toLowerCase();
-
-        // Browser names and search terms to exclude from matching
-        // (to avoid matching "google" in "Google Chrome" or "Google Search")
-        const browserNames = [
-          'google chrome',
-          'chrome',
-          'chromium',
-          'mozilla firefox',
-          'firefox',
-          'microsoft edge',
-          'edge',
-          'safari',
-          'opera',
-          'brave',
-          'vivaldi',
-          'tor browser',
-          'google search',
-          'search', // Exclude search terms
-        ];
-
-        // Try to find domain pattern in title
-        const domainRegex =
-          /([a-zA-Z0-9.-]+\.(com|org|net|io|co|edu|gov|uk|de|fr|jp|au|ca|in|br|ru|cn|es|it|nl|se|no|dk|fi|pl|cz|at|ch|be|ie|pt|gr|tr|za|mx|ar|cl|pe|ve|ec|uy|py|bo|cr|pa|do|gt|hn|ni|sv|bz|jm|tt|bb|gd|lc|vc|ag|dm|kn|ai|vg|ky|ms|tc|fk|gi|mt|cy|is|li|mc|ad|sm|va|lu|mo|hk|sg|my|th|ph|id|vn|kh|la|mm|bn|pk|bd|lk|np|af|ir|iq|sa|ae|kw|bh|qa|om|ye|jo|lb|sy|il|ps|eg|ly|tn|dz|ma|mr|sn|ml|bf|ne|td|sd|er|et|dj|so|ke|ug|rw|bi|tz|zm|mw|mz|ao|na|bw|sz|ls|mg|mu|sc|km|yt|re|io|sh|ac|gs|tf|aq|bv|hm|sj|um|as|gu|mp|pr|vi|fm|mh|pw|ck|nu|pn|tk|to|tv|vu|ws|nf|nr|ki|sb|pg|fj|nc|pf|wf|eh|ax|gg|je|im|fo|gl|pm|bl|mf|so|dev))/i;
-        const match = titleLower.match(domainRegex);
-        if (match && match[1]) {
-          return match[1].replace('www.', '');
-        }
-
-        // Pattern matching for common sites
-        // Note: "google" is intentionally excluded from general matching
-        // to avoid false matches in "Google Chrome" or "Google Search"
-        const domainMap: Record<string, string> = {
-          youtube: 'youtube.com',
-          github: 'github.com',
-          'stack overflow': 'stackoverflow.com',
-          facebook: 'facebook.com',
-          twitter: 'twitter.com',
-          'x.com': 'x.com',
-          linkedin: 'linkedin.com',
-          reddit: 'reddit.com',
-          instagram: 'instagram.com',
-          discord: 'discord.com',
-          slack: 'slack.com',
-          gmail: 'gmail.com',
-          outlook: 'outlook.com',
-          notion: 'notion.so',
-          figma: 'figma.com',
-          trello: 'trello.com',
-          asana: 'asana.com',
-          jira: 'jira.com',
-          confluence: 'confluence.com',
-          medium: 'medium.com',
-          dev: 'dev.to',
-          'stack exchange': 'stackexchange.com',
-          wikipedia: 'wikipedia.org',
-          amazon: 'amazon.com',
-          netflix: 'netflix.com',
-          spotify: 'spotify.com',
-          zoom: 'zoom.us',
-          'microsoft teams': 'teams.microsoft.com',
-          'google meet': 'meet.google.com',
-        };
-
-        // Helper to check if a string contains a browser name or search term
-        const isBrowserOrSearchTerm = (text: string): boolean => {
-          return browserNames.some((browser) => text.includes(browser));
-        };
-
-        // Helper to safely match "google" only when it's clearly a site (not browser/search)
-        // Only match "google" if it appears alone or with site indicators
-        const matchGoogleSite = (text: string): string | null => {
-          const textLower = text.toLowerCase();
-          // Only match "google" if it's not part of "google chrome", "google search", etc.
-          if (
-            textLower.includes('google chrome') ||
-            textLower.includes('google search') ||
-            textLower.includes('chromium')
-          ) {
-            return null;
-          }
-          // Match "google" only if it appears as a standalone word or with site context
-          if (/\bgoogle\b/.test(textLower)) {
-            return 'google.com';
-          }
-          return null;
-        };
-
-        // Split title by " - " to handle patterns like "Site - Browser" or "Site - Description"
-        const parts = titleLower.split(' - ');
-
-        // Priority 1: Check first part (site name) if it exists
-        if (parts.length > 0 && parts[0] !== '') {
-          let firstPart = parts[0].trim();
-          // Remove leading numbers/parentheses like "(2) YouTube" → "youtube"
-          firstPart = firstPart.replace(/^[\(\d\)\s]+/, '').trim();
-
-          // Check for "google" site (with special handling)
-          const googleDomain = matchGoogleSite(firstPart);
-          if (googleDomain) {
-            return googleDomain;
-          }
-
-          // Check known sites
-          for (const [key, domain] of Object.entries(domainMap)) {
-            if (firstPart.includes(key)) {
-              return domain;
-            }
-          }
-        }
-
-        // Priority 2: Check second part only if it's NOT a browser/search term
-        // This handles cases like "Google - YouTube" where second part is the destination
-        if (parts.length > 1 && parts[1] !== '') {
-          const secondPart = parts[1].trim();
-          // Skip if this part contains a browser name or search term
-          if (!isBrowserOrSearchTerm(secondPart)) {
-            // Check for "google" site (with special handling)
-            const googleDomain = matchGoogleSite(secondPart);
-            if (googleDomain) {
-              return googleDomain;
-            }
-
-            // Check known sites
-            for (const [key, domain] of Object.entries(domainMap)) {
-              if (secondPart.includes(key)) {
-                return domain;
-              }
-            }
-          }
-        }
-
-        // Priority 3: Check entire title, but exclude browser names and search terms
-        // Create a cleaned version without browser names for matching
-        let cleanedTitle = titleLower;
-        for (const browser of browserNames) {
-          cleanedTitle = cleanedTitle.replaceAll(browser, '');
-        }
-
-        // Check for "google" site in cleaned title (with special handling)
-        const googleDomain = matchGoogleSite(cleanedTitle);
-        if (googleDomain) {
-          return googleDomain;
-        }
-
-        // Check known sites in cleaned title
-        for (const [key, domain] of Object.entries(domainMap)) {
-          // Only match if the key appears in the cleaned title
-          if (cleanedTitle.includes(key)) {
-            return domain;
-          }
-        }
-
-        // If no match found, return null (don't guess)
-        // This is better than returning a wrong domain
-        return null;
-      };
-
       // Helper function to create display name from title or URL
       const createDisplayName = (
         title: string | null | undefined,
@@ -726,7 +536,7 @@ export class StatsRepository {
           return trimmed.length > 50 ? trimmed.substring(0, 47) + '...' : trimmed;
         }
         if (url && url.trim() !== '') {
-          const domain = extractDomain(url);
+          const domain = this.extractDomainFromUrlString(url);
           if (domain) {
             return domain;
           }
@@ -754,50 +564,9 @@ export class StatsRepository {
         const durationMs = toNumber(activeDuration);
         if (durationMs <= 0) continue;
 
-        let appName: string | null = null;
-        let appType: 'desktop' | 'web' = 'desktop';
-
-        // Check if application is a browser
-        const applicationIsBrowser = isBrowser(event.application);
-
-        if (applicationIsBrowser) {
-          // For browsers, prioritize domain extraction from URL or title
-          let domain: string | null = null;
-
-          // First, try to extract from URL field (populated by agent)
-          if (event.url && event.url.trim() !== '') {
-            domain = extractDomain(event.url);
-          }
-
-          // If no domain from URL, try to extract from title
-          if (!domain && event.title && event.title.trim() !== '') {
-            domain = extractDomainFromTitle(event.title);
-          }
-
-          // Use domain as app name if found
-          if (domain) {
-            appName = domain;
-            appType = 'web';
-          } else {
-            // Fallback to browser name if no domain can be extracted
-            appName = event.application?.trim() || null;
-            appType = 'web';
-          }
-        } else if (event.application && event.application.trim() !== '') {
-          // For non-browser apps, use application name
-          appName = event.application.trim();
-          appType = 'desktop';
-        } else if (event.url && event.url.trim() !== '') {
-          // Fallback: if no application but URL exists, extract domain
-          const domain = extractDomain(event.url);
-          if (domain) {
-            appName = domain;
-            appType = 'web';
-          }
-        }
-
-        // Skip if we couldn't identify the app
-        if (!appName) continue;
+        const resolved = this.resolveActivityIdentityForCategorization(event);
+        if (!resolved) continue;
+        const { appName, appType } = resolved;
 
         // Normalize app name (lowercase for grouping)
         const normalizedName = appName.toLowerCase();
@@ -996,17 +765,19 @@ export class StatsRepository {
           const idlePortionMs = overlapMs * idleRatio;
 
           if (e.status === 'active' && activePortionMs > 0) {
-            const appType: 'desktop' | 'web' =
-              e.source === 'browser' ? 'web' : 'desktop';
-            const appName =
-              e.application?.trim() ||
-              (appType === 'web' ? 'browser' : 'unknown');
+            const identity =
+              this.resolveActivityIdentityForCategorization(e) ?? {
+                appName:
+                  e.application?.trim() ||
+                  (e.source === 'browser' ? 'browser' : 'unknown'),
+                appType: e.source === 'browser' ? 'web' : 'desktop',
+              };
 
             const category = await this.appCategorizationService.categorizeApp(
               tenantId,
               userId,
-              appName,
-              appType,
+              identity.appName,
+              identity.appType,
               e.url ?? undefined,
             );
 
@@ -1192,6 +963,227 @@ export class StatsRepository {
       );
       throw error;
     }
+  }
+
+  /**
+   * Same browser detection as app usage grouping (application name heuristic).
+   */
+  private isBrowserApplication(application: string | null | undefined): boolean {
+    if (!application) return false;
+    const appLower = application.toLowerCase();
+    const browsers = [
+      'chrome',
+      'google chrome',
+      'chromium',
+      'firefox',
+      'mozilla firefox',
+      'edge',
+      'microsoft edge',
+      'safari',
+      'opera',
+      'brave',
+      'vivaldi',
+      'tor browser',
+    ];
+    return browsers.some((browser) => appLower.includes(browser));
+  }
+
+  private extractDomainFromUrlString(url: string | null | undefined): string | null {
+    if (!url || url.trim() === '') return null;
+    try {
+      if (url.startsWith('http://') || url.startsWith('https://')) {
+        const urlObj = new URL(url);
+        return urlObj.hostname.replace('www.', '');
+      }
+      if (url.includes('/')) {
+        return url.split('/')[0].replace('www.', '');
+      }
+      return url.replace('www.', '');
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Infer a site/domain from a window title when URL is missing (browser sessions).
+   * Kept in sync with app usage grouping logic.
+   */
+  private extractDomainFromWindowTitle(title: string | null | undefined): string | null {
+    if (!title || title.trim() === '') return null;
+
+    const titleLower = title.toLowerCase();
+
+    const browserNames = [
+      'google chrome',
+      'chrome',
+      'chromium',
+      'mozilla firefox',
+      'firefox',
+      'microsoft edge',
+      'edge',
+      'safari',
+      'opera',
+      'brave',
+      'vivaldi',
+      'tor browser',
+      'google search',
+      'search',
+    ];
+
+    const domainRegex =
+      /([a-zA-Z0-9.-]+\.(com|org|net|io|co|edu|gov|uk|de|fr|jp|au|ca|in|br|ru|cn|es|it|nl|se|no|dk|fi|pl|cz|at|ch|be|ie|pt|gr|tr|za|mx|ar|cl|pe|ve|ec|uy|py|bo|cr|pa|do|gt|hn|ni|sv|bz|jm|tt|bb|gd|lc|vc|ag|dm|kn|ai|vg|ky|ms|tc|fk|gi|mt|cy|is|li|mc|ad|sm|va|lu|mo|hk|sg|my|th|ph|id|vn|kh|la|mm|bn|pk|bd|lk|np|af|ir|iq|sa|ae|kw|bh|qa|om|ye|jo|lb|sy|il|ps|eg|ly|tn|dz|ma|mr|sn|ml|bf|ne|td|sd|er|et|dj|so|ke|ug|rw|bi|tz|zm|mw|mz|ao|na|bw|sz|ls|mg|mu|sc|km|yt|re|io|sh|ac|gs|tf|aq|bv|hm|sj|um|as|gu|mp|pr|vi|fm|mh|pw|ck|nu|pn|tk|to|tv|vu|ws|nf|nr|ki|sb|pg|fj|nc|pf|wf|eh|ax|gg|je|im|fo|gl|pm|bl|mf|so|dev))/i;
+    const match = titleLower.match(domainRegex);
+    if (match && match[1]) {
+      return match[1].replace('www.', '');
+    }
+
+    const domainMap: Record<string, string> = {
+      youtube: 'youtube.com',
+      github: 'github.com',
+      'stack overflow': 'stackoverflow.com',
+      facebook: 'facebook.com',
+      twitter: 'twitter.com',
+      'x.com': 'x.com',
+      linkedin: 'linkedin.com',
+      reddit: 'reddit.com',
+      instagram: 'instagram.com',
+      discord: 'discord.com',
+      slack: 'slack.com',
+      gmail: 'gmail.com',
+      outlook: 'outlook.com',
+      notion: 'notion.so',
+      figma: 'figma.com',
+      trello: 'trello.com',
+      asana: 'asana.com',
+      jira: 'jira.com',
+      confluence: 'confluence.com',
+      medium: 'medium.com',
+      dev: 'dev.to',
+      'stack exchange': 'stackexchange.com',
+      wikipedia: 'wikipedia.org',
+      amazon: 'amazon.com',
+      netflix: 'netflix.com',
+      spotify: 'spotify.com',
+      zoom: 'zoom.us',
+      'microsoft teams': 'teams.microsoft.com',
+      'google meet': 'meet.google.com',
+    };
+
+    const isBrowserOrSearchTerm = (text: string): boolean => {
+      return browserNames.some((browser) => text.includes(browser));
+    };
+
+    const matchGoogleSite = (text: string): string | null => {
+      const textLower = text.toLowerCase();
+      if (
+        textLower.includes('google chrome') ||
+        textLower.includes('google search') ||
+        textLower.includes('chromium')
+      ) {
+        return null;
+      }
+      if (/\bgoogle\b/.test(textLower)) {
+        return 'google.com';
+      }
+      return null;
+    };
+
+    const parts = titleLower.split(' - ');
+
+    if (parts.length > 0 && parts[0] !== '') {
+      let firstPart = parts[0].trim();
+      firstPart = firstPart.replace(/^[\(\d\)\s]+/, '').trim();
+
+      const googleDomain = matchGoogleSite(firstPart);
+      if (googleDomain) {
+        return googleDomain;
+      }
+
+      for (const [key, domain] of Object.entries(domainMap)) {
+        if (firstPart.includes(key)) {
+          return domain;
+        }
+      }
+    }
+
+    if (parts.length > 1 && parts[1] !== '') {
+      const secondPart = parts[1].trim();
+      if (!isBrowserOrSearchTerm(secondPart)) {
+        const googleDomain = matchGoogleSite(secondPart);
+        if (googleDomain) {
+          return googleDomain;
+        }
+
+        for (const [key, domain] of Object.entries(domainMap)) {
+          if (secondPart.includes(key)) {
+            return domain;
+          }
+        }
+      }
+    }
+
+    let cleanedTitle = titleLower;
+    for (const browser of browserNames) {
+      cleanedTitle = cleanedTitle.replaceAll(browser, '');
+    }
+
+    const googleDomain = matchGoogleSite(cleanedTitle);
+    if (googleDomain) {
+      return googleDomain;
+    }
+
+    for (const [key, domain] of Object.entries(domainMap)) {
+      if (cleanedTitle.includes(key)) {
+        return domain;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Resolve the app name and type passed into productivity rules so timeline and
+   * app usage use the same identity (domain from URL, then title heuristics, etc.).
+   */
+  private resolveActivityIdentityForCategorization(
+    event: Pick<RawEventEntity, 'application' | 'url' | 'title'>,
+  ): { appName: string; appType: 'desktop' | 'web' } | null {
+    let appName: string | null = null;
+    let appType: 'desktop' | 'web' = 'desktop';
+
+    const applicationIsBrowser = this.isBrowserApplication(event.application);
+
+    if (applicationIsBrowser) {
+      let domain: string | null = null;
+
+      if (event.url && event.url.trim() !== '') {
+        domain = this.extractDomainFromUrlString(event.url);
+      }
+
+      if (!domain && event.title && event.title.trim() !== '') {
+        domain = this.extractDomainFromWindowTitle(event.title);
+      }
+
+      if (domain) {
+        appName = domain;
+        appType = 'web';
+      } else {
+        appName = event.application?.trim() || null;
+        appType = 'web';
+      }
+    } else if (event.application && event.application.trim() !== '') {
+      appName = event.application.trim();
+      appType = 'desktop';
+    } else if (event.url && event.url.trim() !== '') {
+      const domain = this.extractDomainFromUrlString(event.url);
+      if (domain) {
+        appName = domain;
+        appType = 'web';
+      }
+    }
+
+    if (!appName) return null;
+    return { appName, appType };
   }
 
   /**
